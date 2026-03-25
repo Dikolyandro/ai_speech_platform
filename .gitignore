@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# Env variables
+.env
+
+# Runtime data (uploads, artifacts)
+data/
+backend/data/
+backend/storage/
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.webm
+*.mp4
+
+# IDE
+.vscode/
+.idea/
+
+# DB
+*.db
+
+# Logs
+*.log
+
+# ML модели (если большие)
+*.bin
+*.pt
+*.safetensors

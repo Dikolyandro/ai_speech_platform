@@ -1,0 +1,9 @@
+{
+  "classes": [
+    "avg",
+    "count",
+    "select",
+    "sum",
+    "top"
+  ]
+}
