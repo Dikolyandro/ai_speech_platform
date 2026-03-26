@@ -17,11 +17,24 @@ _ASR_LEXICAL_FIXES: list[tuple[str, str]] = [
     (r"\bемаунт\b", "amount"),
     (r"\bамонт\b", "amount"),
     (r"\bсум\b", "sum"),
+    (r"\bкатегорию\b", "category"),
+    (r"\bкатегорией\b", "category"),
+    (r"\bкатегории\b", "category"),
     (r"\bкатегори[ияеи]\b", "category"),
     (r"\bкатегориям\b", "category"),
     (r"\bкатегорий\b", "category"),
+    (r"\bкатегор\w+\b", "category"),
     (r"\bгод[уае]?\b", "year"),
     (r"\bпо\s+году\b", "year"),
+    (r"\bхоум\b", "home"),
+    (r"\bэлектроник\w*\b", "electronics"),
+    (r"\bастана\b", "astana"),
+    (r"\bалматы\b", "almaty"),
+    (r"\bшымкент\b", "shymkent"),
+    (r"\bкараганда\b", "karaganda"),
+    (r"\bтомми\b", "tommy"),
+    (r"\bpoduct\b", "product"),
+    (r"\bprodcut\b", "product"),
 ]
 
 # Русские подсказки к именам колонок (если такая колонка есть в таблице)
@@ -138,25 +151,49 @@ def resolve_metric_and_group(
         metric_col = numeric_cols[0]
         bind_metric(metric_col, "first_numeric", "first numeric column in schema")
 
-    # --- group_by: по <col>
-    m = re.search(r"\b(по|by|бойынша)\s+([a-zA-Zа-яА-ЯёЁ_][\w]*)", q_lex)
-    if m:
+    # --- group_by: по <col> (не из «сортировка / order by / sort by по col»)
+    _po_skip_tokens = frozenset(
+        {
+            "убыванию",
+            "убывающему",
+            "возрастанию",
+            "возрастающему",
+            "возрастании",
+            "убывания",
+            "возрастания",
+        }
+    )
+    for m in re.finditer(r"\b(по|by|бойынша)\s+([a-zA-Zа-яА-ЯёЁ_][\w]*)", q_lex):
         cand = m.group(2)
+        if cand.lower() in _po_skip_tokens:
+            continue
+        start = m.start()
+        prefix = q_lex[max(0, start - 40) : start]
+        if re.search(r"(сортировк\w+|order\s+by|sort\s+by)\s*$", prefix, re.IGNORECASE):
+            continue
+        if m.group(1).lower() == "by" and prefix.lower().rstrip().endswith("order"):
+            continue
         for name in col_names:
             if name.lower() == cand.lower():
                 group_col = name
                 bind_group(name, "pattern_po", "по/by + identifier")
                 break
+        if group_col:
+            break
 
-    # --- group_by: exact column name in query
+    # --- group_by: exact column name in query (не «col value» для фильтра)
     if group_col is None:
         for name in col_names:
             if name == metric_col:
                 continue
-            if name.lower() in q_lex:
-                group_col = name
-                bind_group(name, "exact_in_query", f"substring `{name}`")
-                break
+            nl = name.lower()
+            if nl not in q_lex:
+                continue
+            if re.search(rf"\b{re.escape(nl)}\s+[a-zA-Zа-яА-ЯёЁ0-9_.-]+", q_lex):
+                continue
+            group_col = name
+            bind_group(name, "exact_in_query", f"substring `{name}`")
+            break
 
     # --- group_by: alias
     if group_col is None:

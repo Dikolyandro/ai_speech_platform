@@ -22,7 +22,16 @@ class IntentPrediction:
 RU_KK_TOP = ("топ", "top", "ең көп", "ең жоғары", "көбірек")
 RU_KK_SUM = ("сумма", "sum", "итого", "жалпы", "барлығы")
 RU_KK_AVG = ("среднее", "average", "avg", "орташа")
-RU_KK_COUNT = ("сколько", "count", "сан", "қанша")
+RU_KK_COUNT = (
+    "сколько",
+    "количество",
+    "кол-во",
+    "count",
+    "сан",
+    "қанша",
+    "число",
+    "how many",
+)
 
 
 def _normalize(s: str) -> str:
@@ -76,9 +85,11 @@ class IntentService:
 
         # Частый кейс: модель лежит во вложенной папке (например, intent_model/intent_model/)
         if not weights and self.model_dir.exists():
-            for child in self.model_dir.iterdir():
-                if not child.is_dir():
-                    continue
+            children = sorted(
+                (c for c in self.model_dir.iterdir() if c.is_dir()),
+                key=lambda p: p.name.lower(),
+            )
+            for child in children:
                 w_child = list(child.glob("*.safetensors")) + list(child.glob("pytorch_model.bin"))
                 if w_child:
                     self.model_dir = child
@@ -157,6 +168,10 @@ class IntentService:
                 for i, p in enumerate(probs_list)
             }
 
+        # Класс unknown (Intent 1.0) — не SQL-операция; дальше эвристика в query/answer
+        if str(intent).lower() == "unknown":
+            return IntentPrediction(intent="fallback", confidence=confidence, probs=probs)
+
         if confidence < self.threshold:
             return IntentPrediction(intent="fallback", confidence=confidence, probs=probs)
 
@@ -172,7 +187,7 @@ class IntentService:
 def _default_model_dir() -> Path:
     if settings.INTENT_MODEL_DIR:
         return Path(settings.INTENT_MODEL_DIR).expanduser().resolve()
-    return Path(__file__).resolve().parents[1] / "models" / "intent_model"
+    return Path(__file__).resolve().parents[1] / "models" / "intent1.0"
 
 
 DEFAULT_MODEL_DIR = _default_model_dir()
@@ -185,7 +200,7 @@ def get_intent_service() -> IntentService:
     if _intent_service is None:
         _intent_service = IntentService(
             model_dir=str(DEFAULT_MODEL_DIR),
-            threshold=0.55,
+            threshold=float(settings.INTENT_CONFIDENCE_THRESHOLD),
         )
     return _intent_service
 

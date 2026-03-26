@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.api.v1 import router as api_router
@@ -11,6 +12,18 @@ load_dotenv()
 
 app = FastAPI(title="AI Speech Platform API")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Все v1 роуты подключаем одинаково
 app.include_router(api_router, prefix="/api/v1")

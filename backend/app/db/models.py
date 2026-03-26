@@ -1,19 +1,30 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
-from sqlalchemy.sql import func
-from typing import Optional
-from sqlalchemy import JSON
-from sqlalchemy.orm import Mapped, mapped_column
-from app.db.session import Base
-from sqlalchemy import LargeBinary, JSON
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Text, Integer, ForeignKey, DateTime
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import func
+
+from app.db.session import Base
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(Integer, primary_key=True)
-    type = Column(String(32), nullable=False)          # transcribe
-    status = Column(String(32), default="queued")     # queued|running|done|failed
+    type = Column(String(32), nullable=False)
+    status = Column(String(32), default="queued")
     input_uri = Column(String(255))
     error = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -28,15 +39,15 @@ class Transcript(Base):
     lang = Column(String(8))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+
 class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String(255), default="")
     text: Mapped[str] = mapped_column(Text)
-
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-from sqlalchemy import LargeBinary, JSON
+
 
 class Dataset(Base):
     __tablename__ = "datasets"
@@ -44,7 +55,6 @@ class Dataset(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workspace_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -54,11 +64,9 @@ class Chunk(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
     document_id: Mapped[int] = mapped_column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), index=True)
-
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     meta_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -69,7 +77,6 @@ class ChunkEmbedding(Base):
     model_version: Mapped[str] = mapped_column(String(64), default="bge-m3", nullable=False)
     dim: Mapped[int] = mapped_column(Integer, nullable=False)
     vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -78,22 +85,54 @@ class QuerySuggestionsLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
-
-    input_type: Mapped[str] = mapped_column(String(16), nullable=False)  # voice/text
+    input_type: Mapped[str] = mapped_column(String(16), nullable=False)
     raw_input: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     transcribed_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     detected_language: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
-
     suggestions_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 
 class DatasetTableMeta(Base):
     __tablename__ = "dataset_table_meta"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), index=True, unique=True)
+    table_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    columns_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    table_name: Mapped[str] = mapped_column(String(128), nullable=False)  # e.g. ds_1_data
-    columns_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # {"col":"type",...}
 
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    title: Mapped[str] = mapped_column(String(255), default="New chat")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    meta_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SavedQuery(Base):
+    __tablename__ = "saved_queries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    title: Mapped[str] = mapped_column(String(255), default="Saved query")
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    sql_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    answer_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    result_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    dataset_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

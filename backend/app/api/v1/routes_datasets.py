@@ -1,13 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from __future__ import annotations
 
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
+from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Dataset, DatasetTableMeta
 from app.db.session import get_db
-from app.db.models import Dataset, Document, Chunk, ChunkEmbedding
-from app.services.embedding_service import Embedder
+from app.services.document_index_service import index_document_text
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
+
 
 class CreateDatasetReq(BaseModel):
     name: str
@@ -20,6 +25,40 @@ class AddDocReq(BaseModel):
     chunk_size: int = 500
 
 
+@router.get("")
+async def list_datasets(
+    workspace_id: str = "default",
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    r = await db.execute(
+        select(Dataset).where(Dataset.workspace_id == workspace_id).order_by(Dataset.id.desc())
+    )
+    items = r.scalars().all()
+    out = []
+    for d in items:
+        meta_r = await db.execute(select(DatasetTableMeta).where(DatasetTableMeta.dataset_id == d.id))
+        meta = meta_r.scalar_one_or_none()
+        table_name = meta.table_name if meta else f"ds_{d.id}_data"
+        row_count = None
+        try:
+            c = await db.execute(text(f"SELECT COUNT(*) FROM `{table_name}`"))
+            row_count = int(c.scalar() or 0)
+        except Exception:
+            row_count = None
+        out.append(
+            {
+                "id": d.id,
+                "name": d.name,
+                "workspace_id": d.workspace_id,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "table_name": table_name,
+                "columns": meta.columns_json if meta else None,
+                "row_count": row_count,
+            }
+        )
+    return {"datasets": out}
+
+
 @router.post("")
 async def create_dataset(req: CreateDatasetReq, db: AsyncSession = Depends(get_db)):
     ds = Dataset(name=req.name, workspace_id=req.workspace_id)
@@ -29,67 +68,41 @@ async def create_dataset(req: CreateDatasetReq, db: AsyncSession = Depends(get_d
     return {"dataset_id": ds.id}
 
 
-@router.post("/{dataset_id}/documents")
-async def add_document(dataset_id: int, req: AddDocReq, db: AsyncSession = Depends(get_db)):
-    # 1) check dataset exists
+@router.delete("/{dataset_id}")
+async def delete_dataset(dataset_id: int, db: AsyncSession = Depends(get_db)) -> dict:
     ds = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
     if not ds:
         raise HTTPException(status_code=404, detail="dataset not found")
-
-    # 2) save document
-    doc = Document(title=req.title, text=req.text)
-    db.add(doc)
+    await db.execute(text(f"DROP TABLE IF EXISTS `ds_{dataset_id}_data`"))
+    await db.execute(delete(Dataset).where(Dataset.id == dataset_id))
     await db.commit()
-    await db.refresh(doc)
+    return {"ok": True, "dataset_id": dataset_id}
 
-    # 3) chunking
-    chunks = []
-    idx = 0
-    step = max(50, req.chunk_size)  # защита от слишком маленького
-    text = req.text or ""
 
-    for i in range(0, len(text), step):
-        part = text[i:i + step].strip()
-        if part:
-            chunks.append(
-                Chunk(
-                    dataset_id=dataset_id,
-                    document_id=doc.id,
-                    chunk_index=idx,
-                    text=part,
-                    meta_json=None,
-                )
-            )
-            idx += 1
+@router.post("/{dataset_id}/documents")
+async def add_document(dataset_id: int, req: AddDocReq, db: AsyncSession = Depends(get_db)):
+    return await index_document_text(
+        db,
+        dataset_id,
+        title=req.title,
+        text=req.text,
+        chunk_size=req.chunk_size,
+    )
 
-    if not chunks:
-        raise HTTPException(status_code=400, detail="empty text after chunking")
 
-    db.add_all(chunks)
-    await db.commit()
-
-    # 4) reload chunks (чтобы были id)
-    rows = (await db.execute(
-        select(Chunk)
-        .where(Chunk.dataset_id == dataset_id, Chunk.document_id == doc.id)
-        .order_by(Chunk.chunk_index)
-    )).scalars().all()
-
-    # 5) embeddings
-    embedder = Embedder()
-    arr = embedder.encode([c.text for c in rows])
-    dim = int(arr.shape[1])
-
-    embeds = [
-        ChunkEmbedding(
-            chunk_id=ch.id,
-            model_version="bge-m3",
-            dim=dim,
-            vector=vec.astype("float32").tobytes(),
-        )
-        for ch, vec in zip(rows, arr)
-    ]
-    db.add_all(embeds)
-    await db.commit()
-
-    return {"document_id": doc.id, "chunks_indexed": len(rows)}
+@router.post("/{dataset_id}/documents/upload")
+async def upload_document_file(
+    dataset_id: int,
+    db: AsyncSession = Depends(get_db),
+    file: UploadFile = File(...),
+    chunk_size: int = Form(500),
+) -> dict:
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty file")
+    try:
+        body = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        body = raw.decode("utf-8", errors="replace")
+    title = Path(file.filename or "document").name
+    return await index_document_text(db, dataset_id, title=title, text=body, chunk_size=chunk_size)
