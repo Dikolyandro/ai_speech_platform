@@ -1,0 +1,32 @@
+{
+  "classes": [
+    "avg",
+    "count",
+    "select",
+    "sum",
+    "top",
+    "unknown"
+  ],
+  "label2id": {
+    "avg": 0,
+    "count": 1,
+    "select": 2,
+    "sum": 3,
+    "top": 4,
+    "unknown": 5
+  },
+  "id2label": {
+    "0": "avg",
+    "1": "count",
+    "2": "select",
+    "3": "sum",
+    "4": "top",
+    "5": "unknown"
+  },
+  "unknown_threshold": 0.65,
+  "max_len": 128,
+  "model_name": "xlm-roberta-base",
+  "train_size": 5250,
+  "val_size": 1125,
+  "test_size": 1125
+}
