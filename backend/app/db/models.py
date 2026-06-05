@@ -12,6 +12,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    Boolean,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -28,6 +29,10 @@ class User(Base):
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
     preferred_language: Mapped[str] = mapped_column(String(2), default="ru", nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_verification_code_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    email_verification_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_verification_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -69,6 +74,7 @@ class Dataset(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     workspace_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_private: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -115,6 +121,25 @@ class DatasetTableMeta(Base):
     dataset_id: Mapped[int] = mapped_column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), index=True, unique=True)
     table_name: Mapped[str] = mapped_column(String(128), nullable=False)
     columns_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BigDataDataset(Base):
+    __tablename__ = "bigdata_datasets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_private: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    raw_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    processed_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    format: Mapped[str] = mapped_column(String(32), default="csv", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="uploaded", index=True, nullable=False)
+    row_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    column_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    schema_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    profile_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

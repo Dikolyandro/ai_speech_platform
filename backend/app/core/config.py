@@ -14,12 +14,23 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     OPENAI_API_KEY: str
     OPENAI_ASR_MODEL: str = "gpt-4o-mini-transcribe"
+    ASR_TIMEOUT_SECONDS: int = 60
+    ASR_MAX_AUDIO_BYTES: int = 10 * 1024 * 1024
     LOCAL_AUDIO_DIR: str
 
     # Auth (JWT)
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+
+    # Email verification (optional in development; code is logged if SMTP is not configured)
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM_EMAIL: str | None = None
+    SMTP_FROM_NAME: str = "AI Analytics Assistant"
+    SMTP_USE_TLS: bool = True
 
     # Папка с весами intent (tokenizer + config + model.safetensors). По умолчанию — app/models/intent1.0
     INTENT_MODEL_DIR: str | None = None

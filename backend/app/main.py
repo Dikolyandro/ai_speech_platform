@@ -121,6 +121,50 @@ async def startup():
                         "ADD COLUMN `preferred_language` VARCHAR(2) NOT NULL DEFAULT 'ru'"
                     )
                 )
+            user_email_verification_columns = {
+                "is_email_verified": "ALTER TABLE `users` ADD COLUMN `is_email_verified` BOOLEAN NOT NULL DEFAULT TRUE",
+                "email_verification_code_hash": "ALTER TABLE `users` ADD COLUMN `email_verification_code_hash` VARCHAR(255) NULL",
+                "email_verification_expires_at": "ALTER TABLE `users` ADD COLUMN `email_verification_expires_at` DATETIME NULL",
+                "email_verification_attempts": "ALTER TABLE `users` ADD COLUMN `email_verification_attempts` INT NOT NULL DEFAULT 0",
+            }
+            for column_name, ddl in user_email_verification_columns.items():
+                col_exists = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT COUNT(*)
+                            FROM INFORMATION_SCHEMA.COLUMNS
+                            WHERE TABLE_SCHEMA = DATABASE()
+                              AND TABLE_NAME = 'users'
+                              AND COLUMN_NAME = :column_name
+                            """
+                        ),
+                        {"column_name": column_name},
+                    )
+                ).scalar()
+                if col_exists == 0:
+                    await conn.execute(text(ddl))
+            privacy_columns = {
+                ("datasets", "is_private"): "ALTER TABLE `datasets` ADD COLUMN `is_private` BOOLEAN NOT NULL DEFAULT TRUE",
+                ("bigdata_datasets", "is_private"): "ALTER TABLE `bigdata_datasets` ADD COLUMN `is_private` BOOLEAN NOT NULL DEFAULT TRUE",
+            }
+            for (table_name, column_name), ddl in privacy_columns.items():
+                col_exists = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT COUNT(*)
+                            FROM INFORMATION_SCHEMA.COLUMNS
+                            WHERE TABLE_SCHEMA = DATABASE()
+                              AND TABLE_NAME = :table_name
+                              AND COLUMN_NAME = :column_name
+                            """
+                        ),
+                        {"table_name": table_name, "column_name": column_name},
+                    )
+                ).scalar()
+                if col_exists == 0:
+                    await conn.execute(text(ddl))
         elif dialect == "sqlite":
             # lightweight migration for existing sqlite users table (skip if DB is fresh)
             users_tbl = (
@@ -138,6 +182,42 @@ async def startup():
                     await conn.execute(
                         text("ALTER TABLE users ADD COLUMN preferred_language VARCHAR(2) NOT NULL DEFAULT 'ru'")
                     )
+                user_email_verification_columns = {
+                    "is_email_verified": "ALTER TABLE users ADD COLUMN is_email_verified BOOLEAN NOT NULL DEFAULT 1",
+                    "email_verification_code_hash": "ALTER TABLE users ADD COLUMN email_verification_code_hash VARCHAR(255) NULL",
+                    "email_verification_expires_at": "ALTER TABLE users ADD COLUMN email_verification_expires_at DATETIME NULL",
+                    "email_verification_attempts": "ALTER TABLE users ADD COLUMN email_verification_attempts INTEGER NOT NULL DEFAULT 0",
+                }
+                for column_name, ddl in user_email_verification_columns.items():
+                    col_exists = (
+                        await conn.execute(
+                            text("SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = :column_name"),
+                            {"column_name": column_name},
+                        )
+                    ).scalar()
+                    if col_exists == 0:
+                        await conn.execute(text(ddl))
+                privacy_columns = {
+                    ("datasets", "is_private"): "ALTER TABLE datasets ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 1",
+                    ("bigdata_datasets", "is_private"): "ALTER TABLE bigdata_datasets ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 1",
+                }
+                for (table_name, column_name), ddl in privacy_columns.items():
+                    table_exists = (
+                        await conn.execute(
+                            text("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = :table_name"),
+                            {"table_name": table_name},
+                        )
+                    ).scalar()
+                    if not table_exists:
+                        continue
+                    col_exists = (
+                        await conn.execute(
+                            text(f"SELECT COUNT(*) FROM pragma_table_info('{table_name}') WHERE name = :column_name"),
+                            {"column_name": column_name},
+                        )
+                    ).scalar()
+                    if col_exists == 0:
+                        await conn.execute(text(ddl))
         try:
             await conn.run_sync(Base.metadata.create_all)
         except OperationalError as exc:

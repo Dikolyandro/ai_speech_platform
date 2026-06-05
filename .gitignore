@@ -11,6 +11,14 @@ __pycache__/
 # Runtime data (uploads, artifacts)
 data/
 backend/data/
+!backend/data/
+!backend/data/bigdata/
+backend/data/bigdata/raw/*
+backend/data/bigdata/processed/*
+!backend/data/bigdata/raw/
+!backend/data/bigdata/processed/
+!backend/data/bigdata/raw/.gitkeep
+!backend/data/bigdata/processed/.gitkeep
 backend/storage/
 *.wav
 *.mp3
@@ -33,3 +41,22 @@ backend/storage/
 *.bin
 *.pt
 *.safetensors
+
+backend/.env
+frontend/.env
+backend/local.db
+frontend/node_modules/
+frontend/dist/
+
+# Runtime data
+backend/data/**
+
+# Keep folder structure
+!backend/data/
+!backend/data/bigdata/
+!backend/data/bigdata/raw/
+!backend/data/bigdata/processed/
+
+# Keep placeholders only
+!backend/data/bigdata/raw/.gitkeep
+!backend/data/bigdata/processed/.gitkeepgit rm -r --cached backend/data

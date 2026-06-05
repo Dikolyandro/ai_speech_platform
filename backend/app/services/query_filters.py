@@ -669,6 +669,28 @@ def build_dynamic_filters_and_order(
                     add_cmp_numeric(
                         name, op, float(mm.group(1).replace(",", ".")), "numeric_cmp_multilang"
                     )
+            # Natural English phrasing: "overall is greater than 4", "price is lower than 10".
+            for rx, op in (
+                (
+                    rf"\b{esc}\s+(?:is\s+)?(?:more(?:\s+than)?|over|above|greater(?:\s+than)?|higher(?:\s+than)?)\s+(\d+(?:\.\d+)?)\b",
+                    ">",
+                ),
+                (
+                    rf"\b{esc}\s+(?:is\s+)?(?:less(?:\s+than)?|fewer(?:\s+than)?|under|below|lower(?:\s+than)?)\s+(\d+(?:\.\d+)?)\b",
+                    "<",
+                ),
+                (rf"\b{esc}\s+(?:is\s+)?(?:at\s+least|not\s+less\s+than)\s+(\d+(?:\.\d+)?)\b", ">="),
+                (rf"\b{esc}\s+(?:is\s+)?(?:at\s+most|not\s+more\s+than)\s+(\d+(?:\.\d+)?)\b", "<="),
+                (rf"\b{esc}\s+is\s*>\s*(\d+(?:\.\d+)?)\b", ">"),
+                (rf"\b{esc}\s+is\s*<\s*(\d+(?:\.\d+)?)\b", "<"),
+                (rf"\b{esc}\s+is\s*>=\s*(\d+(?:\.\d+)?)\b", ">="),
+                (rf"\b{esc}\s+is\s*<=\s*(\d+(?:\.\d+)?)\b", "<="),
+            ):
+                mm = re.search(rx, q, re.IGNORECASE)
+                if mm:
+                    add_cmp_numeric(
+                        name, op, float(mm.group(1).replace(",", ".")), "numeric_cmp_en_is"
+                    )
 
     # --- ORDER BY
     order_by = _pick_order_by(q, col_by_lower, col_types)

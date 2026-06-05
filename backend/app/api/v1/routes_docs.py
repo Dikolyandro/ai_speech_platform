@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db
-from app.db.models import Dataset, Document, Chunk, ChunkEmbedding
+from app.db.models import Dataset, Document, Chunk, ChunkEmbedding, User
 from app.services.embedding_service import Embedder
+from app.auth.security import get_current_user
 
 router = APIRouter(prefix="/datasets", tags=["Datasets"])
 
@@ -19,15 +20,29 @@ class AddDocReq(BaseModel):
     chunk_size: int = 500  # очень грубо, потом улучшим
 
 @router.post("")
-async def create_dataset(req: CreateDatasetReq, db: AsyncSession = Depends(get_db)):
-    ds = Dataset(name=req.name, workspace_id=req.workspace_id)
+async def create_dataset(
+    req: CreateDatasetReq,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ds = Dataset(name=req.name, workspace_id=req.workspace_id, user_id=user.id, is_private=True)
     db.add(ds)
     await db.commit()
     await db.refresh(ds)
     return {"dataset_id": ds.id}
 
 @router.post("/{dataset_id}/documents")
-async def add_document(dataset_id: int, req: AddDocReq, db: AsyncSession = Depends(get_db)):
+async def add_document(
+    dataset_id: int,
+    req: AddDocReq,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ds = (
+        await db.execute(select(Dataset).where(Dataset.id == dataset_id, Dataset.user_id == user.id))
+    ).scalar_one_or_none()
+    if not ds:
+        raise HTTPException(status_code=404, detail="dataset not found")
     doc = Document(title=req.title, text=req.text)
     db.add(doc)
     await db.commit()

@@ -11,6 +11,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Dataset, DatasetTableMeta
+from app.services.dataset_overview_service import (
+    build_dataset_overview,
+    wrap_columns_with_summary,
+)
 
 
 def _sanitize_col(name: str) -> str:
@@ -374,24 +378,26 @@ async def import_csv_into_dataset(
         await db.execute(ins_sql, params_list)
         inserted += len(batch)
 
-    # Store a lightweight schema profile into DatasetTableMeta.columns_json.
-    # Kept as a list for backward compatibility with existing API consumers.
+    # Store schema profile + deterministic dataset overview in DatasetTableMeta.columns_json.
+    # Shape: { "columns": [...], "dataset_summary": {...} } (legacy plain list still supported on read).
     prof_rows: list[list[Optional[str]]] = [
         [(c if c != "" else None) for c in r] for r in norm_rows
     ]
     columns_payload = _profile_columns(header, col_types, prof_rows)
+    overview = build_dataset_overview(columns_payload, row_count=inserted)
+    columns_stored = wrap_columns_with_summary(columns_payload, overview)
     meta_row = (
         await db.execute(select(DatasetTableMeta).where(DatasetTableMeta.dataset_id == dataset_id))
     ).scalar_one_or_none()
     if meta_row:
         meta_row.table_name = table_name
-        meta_row.columns_json = columns_payload
+        meta_row.columns_json = columns_stored
     else:
         db.add(
             DatasetTableMeta(
                 dataset_id=dataset_id,
                 table_name=table_name,
-                columns_json=columns_payload,
+                columns_json=columns_stored,
             )
         )
 
@@ -401,6 +407,7 @@ async def import_csv_into_dataset(
         "dataset_id": dataset_id,
         "table_name": table_name,
         "columns": columns_payload,
+        "dataset_summary": overview,
         "rows_inserted": inserted,
         "note": "Now use POST /api/v1/query/answer to get results from this table.",
     }

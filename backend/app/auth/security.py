@@ -46,10 +46,17 @@ async def get_current_user(
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         sub = payload.get("sub")
-        if not sub:
+        exp = payload.get("exp")
+        iat = payload.get("iat")
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        if not sub or not isinstance(exp, int):
+            raise cred_exc
+        if exp <= now_ts:
+            raise cred_exc
+        if isinstance(iat, int) and iat > now_ts + 60:
             raise cred_exc
         user_id = int(sub)
-    except (JWTError, ValueError):
+    except (JWTError, ValueError, TypeError):
         raise cred_exc
 
     u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()

@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.dataset_overview_service import unwrap_dataset_columns_json
+
 
 def _norm_text(s: str) -> str:
     s = (s or "").strip().lower()
@@ -92,10 +94,11 @@ class ProfileFilter:
 
 
 def _columns_from_profile(columns_json: Any) -> List[Dict[str, Any]]:
-    if not isinstance(columns_json, list):
+    cols = unwrap_dataset_columns_json(columns_json)
+    if not cols:
         return []
     out: List[Dict[str, Any]] = []
-    for it in columns_json:
+    for it in cols:
         if not isinstance(it, dict):
             continue
         name = it.get("name")

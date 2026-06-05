@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +26,8 @@ from app.auth.security import get_current_user
 from app.db.models import Dataset, DatasetTableMeta, User
 from sqlalchemy import select
 from app.services.i18n_service import normalize_preferred_language, validate_query_language
+from app.services.analytics_semantic_layer import AnalyticsSemanticResult, analyze_query_semantics
+from app.services.dataset_overview_service import unwrap_dataset_columns_json
 
 router = APIRouter(prefix="/query", tags=["Query Answer"])
 
@@ -47,6 +50,55 @@ class AnswerRequest(BaseModel):
     dataset_id: int
     input: QueryInput
     options: AnswerOptions = AnswerOptions()
+
+
+# ---------- Semantic debug (no SQL) ----------
+class SemanticDebugRequest(BaseModel):
+    """Developer payload: inspect legacy vs analytics semantic layer for a query."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"dataset_id": 1, "text": "show top revenue by category"},
+                {"dataset_id": 1, "text": "покажи топ категорий по выручке"},
+                {"dataset_id": 1, "text": "санат бойынша ең көп табысты көрсет"},
+            ]
+        }
+    )
+
+    dataset_id: int = Field(..., ge=1)
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+class SemanticDebugLegacySemantics(BaseModel):
+    """Output of ``resolve_metric_and_group`` (same inputs as ``/query/answer``)."""
+
+    resolved_metric: Optional[str] = None
+    resolved_group_by: Optional[str] = None
+    query_after_lexical_fixes: str = ""
+    debug: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+
+
+class SemanticDebugComparison(BaseModel):
+    """Side-by-side agreement between legacy resolver and semantic layer v1."""
+
+    metric_same: bool
+    group_same: bool
+    semantic_metric_better_candidate: Optional[str] = None
+    semantic_group_better_candidate: Optional[str] = None
+
+
+class SemanticDebugResponse(BaseModel):
+    """Full debug payload; never executes SQL."""
+
+    dataset_id: int
+    query: str
+    table_name: str
+    legacy_semantics: SemanticDebugLegacySemantics
+    semantic_layer_v1: Optional[dict[str, Any]] = None
+    semantic_layer_error: Optional[str] = None
+    comparison: SemanticDebugComparison
 
 
 # ---------- Helpers ----------
@@ -156,6 +208,63 @@ def _cols_by_lower(cols: list[tuple[str, str]]) -> dict[str, str]:
 
 def _numeric_col_names(cols: list[tuple[str, str]]) -> set[str]:
     return {c[0] for c in cols if _is_numeric_sql_type(c[1] or "")}
+
+
+def _is_average_metric_candidate(column: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", column.lower())
+    if normalized.endswith("id"):
+        return False
+    return normalized not in {
+        "vendorid",
+        "ratecodeid",
+        "pulocationid",
+        "dolocationid",
+        "paymenttype",
+        "storeandfwdflag",
+    }
+
+
+def _resolve_explicit_average_by(
+    q_lex: str,
+    cols: list[tuple[str, str]],
+) -> Optional[tuple[str, str]]:
+    """Resolve safe phrases like "average fare_amount by VendorID" deterministically."""
+    if not re.search(r"\b(?:average|avg|mean)\b", q_lex, re.IGNORECASE):
+        return None
+    numeric_set = _numeric_col_names(cols)
+    aliases: list[tuple[str, str]] = []
+    for col, _typ in cols:
+        for alias in _col_aliases(col):
+            aliases.append((alias.lower(), col))
+    aliases.sort(key=lambda item: len(item[0]), reverse=True)
+
+    q = q_lex.lower()
+    for metric_alias, metric_col in aliases:
+        if metric_col not in numeric_set or not _is_average_metric_candidate(metric_col):
+            continue
+        metric_pat = re.escape(metric_alias)
+        for group_alias, group_col in aliases:
+            if group_col == metric_col:
+                continue
+            group_pat = re.escape(group_alias)
+            if re.search(rf"\b(?:average|avg|mean)\s+{metric_pat}\s+(?:by|per|for each|grouped by)\s+{group_pat}\b", q):
+                return metric_col, group_col
+    return None
+
+
+def _resolve_explicit_top_values(q_lex: str, cols: list[tuple[str, str]]) -> Optional[str]:
+    """Resolve safe phrases like "show top payment_type" as top grouped values."""
+    aliases: list[tuple[str, str]] = []
+    for col, _typ in cols:
+        for alias in _col_aliases(col):
+            aliases.append((alias.lower(), col))
+    aliases.sort(key=lambda item: len(item[0]), reverse=True)
+
+    q = q_lex.lower().strip().rstrip(".")
+    for alias, col in aliases:
+        if re.fullmatch(rf"(?:show\s+)?top\s+{re.escape(alias)}", q, re.IGNORECASE):
+            return col
+    return None
 
 
 _PO_SKIP_ORDER = frozenset(
@@ -385,6 +494,440 @@ def _should_force_select_for_table_rows(q_lex: str, operation: str) -> bool:
     return True
 
 
+_NETFLIX_CONFLICT_OVERRIDES: frozenset[str] = frozenset(
+    {
+        "numeric_comparison_rows",
+        "row_table_intent",
+        "score_delta_vs_previous",
+        "row_ranking_dual_extreme",
+        "row_ranking_top_or_extreme",
+    }
+)
+
+
+def _detect_netflix_query_pattern(
+    q_lex: str,
+    col_set: set[str],
+    semantic_layer_result: Optional[AnalyticsSemanticResult],
+) -> dict[str, Any]:
+    """
+    Controlled Netflix-style catalog intents (column names must exist in ``col_set``).
+
+    Returns a dict with ``matched``, ``pattern``, ``operation``, ``metric_col``,
+    ``group_col``, ``order_by``, and ``debug``. Does not execute SQL.
+    """
+    ql = (q_lex or "").strip().lower()
+    out: dict[str, Any] = {
+        "matched": False,
+        "pattern": None,
+        "operation": None,
+        "metric_col": None,
+        "group_col": None,
+        "order_by": None,
+        "debug": {},
+    }
+    dd = semantic_layer_result.detected_dimension if semantic_layer_result else None
+    dd_col = dd.column if dd else None
+    dd_score = float(dd.score) if dd else 0.0
+
+    def _ok_dim(col: str, min_score: float = 0.35) -> bool:
+        return bool(dd and dd_col == col and dd_score >= min_score)
+
+    # B) compare movies vs TV (high-specificity first)
+    if "type" in col_set:
+        has_movie = bool(re.search(r"\b(movies?|film|films|фильм|кино)\b", ql))
+        has_tv = bool(re.search(r"\b(tv\s*shows?|television|series|сериал|шоу)\b", ql))
+        wants_compare = bool(
+            re.search(r"\b(compare|comparison|versus|vs|between)\b", ql)
+            or re.search(r"\bmovies\s+and\s+tv\b", ql)
+            or re.search(r"\bfilms?\s+and\s+(tv|series)\b", ql)
+        )
+        if wants_compare and has_movie and has_tv:
+            out.update(
+                matched=True,
+                pattern="compare_type",
+                operation="count",
+                metric_col=None,
+                group_col="type",
+                order_by="count_desc",
+                debug={"signals": ["compare", "movie", "tv"]},
+            )
+            return out
+
+    # E) longest movies (duration text + superlative)
+    if "duration" in col_set and re.search(r"\b(longest|длинн|max\s+runtime|runtime)\b", ql):
+        if re.search(r"\b(movies?|фильм|кино)\b", ql):
+            title_c = "title" if "title" in col_set else None
+            sid = "show_id" if "show_id" in col_set else None
+            group_disp = title_c or sid
+            if group_disp:
+                out.update(
+                    matched=True,
+                    pattern="longest_movies",
+                    operation="top",
+                    metric_col="duration",
+                    group_col=group_disp,
+                    order_by="sum_desc",
+                    debug={"title_used": title_c is not None, "group_col": group_disp},
+                )
+                return out
+
+    # C) release-year trend
+    if "release_year" in col_set and re.search(
+        r"\b(trend|trends|releases?\s+over|over\s+time|timeline|year\s+over|"
+        r"динамика|тренд|по\s+годам|жылдар|шыққан)\b",
+        ql,
+    ):
+        out.update(
+            matched=True,
+            pattern="release_trend",
+            operation="count",
+            metric_col=None,
+            group_col="release_year",
+            order_by="release_year_asc",
+            debug={"signals": ["release_axis"]},
+        )
+        return out
+
+    # A) top / most common genres (semantic layer must point at listed_in)
+    if "listed_in" in col_set and _ok_dim("listed_in", 0.35):
+        if re.search(
+            r"\b(genres?|жанр|top\s+genres|most\s+common\s+genres|common\s+genres|"
+            r"which\s+genres|dominat\w*)\b",
+            ql,
+        ):
+            out.update(
+                matched=True,
+                pattern="top_genres",
+                operation="top",
+                metric_col=None,
+                group_col="listed_in",
+                order_by="count_desc",
+                debug={"semantic_dimension": "listed_in", "score": dd_score},
+            )
+            return out
+
+    # D) countries producing content
+    if "country" in col_set and (
+        _ok_dim("country", 0.32)
+        or re.search(r"\b(countries?|стран|елдер|nation|nations|region|regions)\b", ql)
+    ):
+        if re.search(r"\b(produce|production|content|контент|шыхара|шығар)\b", ql) or re.search(
+            r"\b(which|what|какие|қай)\s+\w*\s*(countries?|стран|ел)\b",
+            ql,
+        ):
+            out.update(
+                matched=True,
+                pattern="top_countries",
+                operation="top",
+                metric_col=None,
+                group_col="country",
+                order_by="count_desc",
+                debug={"semantic_dimension": dd_col if dd_col == "country" else None},
+            )
+            return out
+
+    return out
+
+
+def _netflix_duration_agg_expr_sql(duration_col: str) -> str:
+    """
+    Aggregate first integer token from a textual duration (e.g. ``90 min``, ``1 Season``).
+
+    Dialect-specific for MySQL vs SQLite dev setups.
+    """
+    qc = f"`{duration_col}`"
+    dialect = (getattr(engine.dialect, "name", "") or "").lower()
+    if dialect in ("mysql", "mariadb"):
+        return f"MAX(CAST(REGEXP_SUBSTR({qc}, '[0-9]+') AS UNSIGNED))"
+    trimmed = f"TRIM({qc})"
+    return (
+        f"MAX(CASE WHEN {trimmed} = '' OR {trimmed} IS NULL THEN 0 "
+        f"ELSE CAST("
+        f"SUBSTR({trimmed}, 1, MAX(1, INSTR({trimmed} || ' ', ' ') - 1))"
+        f" AS INTEGER) END)"
+    )
+
+
+def _netflix_listed_in_nonempty_where_clause(where_sql: str) -> str:
+    """Append ``listed_in`` non-empty guard to an existing ``WHERE ...`` fragment (or create one)."""
+    dialect = (getattr(engine.dialect, "name", "") or "").lower()
+    if dialect in ("mysql", "mariadb"):
+        cond = "`listed_in` IS NOT NULL AND TRIM(CAST(`listed_in` AS CHAR)) != ''"
+    else:
+        cond = "`listed_in` IS NOT NULL AND TRIM(CAST(`listed_in` AS TEXT)) != ''"
+    ws = (where_sql or "").strip()
+    if not ws:
+        return f" WHERE {cond} "
+    if ws.upper().startswith("WHERE"):
+        return f"{ws} AND {cond} "
+    return f" WHERE {ws} AND {cond} "
+
+
+def _mysql_supports_recursive_split_cte(col_set: set[str]) -> bool:
+    """MySQL 8.0.4+ ``WITH RECURSIVE`` + stable row id via ``show_id`` (Netflix CSV)."""
+    if "show_id" not in col_set:
+        return False
+    v = getattr(engine.dialect, "server_version_info", None)
+    if not v:
+        return False
+    try:
+        return bool(v >= (8, 0, 4))
+    except Exception:
+        return False
+
+
+def _netflix_top_genres_listed_in_split_sql(
+    table_name: str,
+    where_sql: str,
+    limit: int,
+    col_set: set[str],
+) -> tuple[str, str, bool]:
+    """
+    Build grouped genre counts by splitting ``listed_in`` on commas.
+
+    Returns ``(sql, genre_split_strategy, genre_split_enabled)`` where
+    ``genre_split_enabled`` is True only for the recursive-CTE path.
+    """
+    dialect = (getattr(engine.dialect, "name", "") or "").lower()
+    base_where = _netflix_listed_in_nonempty_where_clause(where_sql)
+    qt = f"`{table_name}`"
+
+    if dialect in ("mysql", "mariadb") and _mysql_supports_recursive_split_cte(col_set):
+        sql = f"""
+WITH RECURSIVE split_genres AS (
+  SELECT
+    `show_id` AS _rid,
+    TRIM(SUBSTRING_INDEX(`listed_in`, ',', 1)) AS genre,
+    TRIM(
+      CASE
+        WHEN LOCATE(',', `listed_in`) > 0
+        THEN SUBSTRING(`listed_in`, LOCATE(',', `listed_in`) + 1)
+        ELSE ''
+      END
+    ) AS remainder
+  FROM {qt}
+  {base_where}
+
+  UNION ALL
+
+  SELECT
+    _rid,
+    TRIM(SUBSTRING_INDEX(remainder, ',', 1)),
+    TRIM(
+      CASE
+        WHEN LOCATE(',', remainder) > 0
+        THEN SUBSTRING(remainder, LOCATE(',', remainder) + 1)
+        ELSE ''
+      END
+    )
+  FROM split_genres
+  WHERE remainder <> '' AND remainder IS NOT NULL
+)
+SELECT genre AS `listed_in`, COUNT(*) AS `count`
+FROM split_genres
+WHERE genre <> '' AND genre IS NOT NULL
+GROUP BY genre
+ORDER BY `count` DESC
+LIMIT {int(limit)}
+""".strip()
+        return sql, "recursive_cte", True
+
+    if dialect == "sqlite" or (
+        (getattr(engine.url, "drivername", "") or "").lower().startswith("sqlite")
+        and dialect not in ("mysql", "mariadb")
+    ):
+        sql = f"""
+WITH RECURSIVE split_genres AS (
+  SELECT
+    ROWID AS _rid,
+    TRIM(SUBSTR(`listed_in`, 1, INSTR(`listed_in` || ',', ',') - 1)) AS genre,
+    CASE
+      WHEN INSTR(`listed_in`, ',') > 0
+      THEN SUBSTR(`listed_in`, INSTR(`listed_in`, ',') + 1)
+      ELSE ''
+    END AS remainder
+  FROM {qt}
+  {base_where}
+
+  UNION ALL
+
+  SELECT
+    _rid,
+    TRIM(SUBSTR(remainder, 1, INSTR(remainder || ',', ',') - 1)),
+    CASE
+      WHEN INSTR(remainder, ',') > 0
+      THEN SUBSTR(remainder, INSTR(remainder, ',') + 1)
+      ELSE ''
+    END
+  FROM split_genres
+  WHERE remainder != '' AND remainder IS NOT NULL
+)
+SELECT genre AS `listed_in`, COUNT(*) AS `count`
+FROM split_genres
+WHERE genre != '' AND genre IS NOT NULL
+GROUP BY genre
+ORDER BY `count` DESC
+LIMIT {int(limit)}
+""".strip()
+        return sql, "recursive_cte", True
+
+    # Safe fallback: whole ``listed_in`` string as one bucket (previous behaviour).
+    fb_where = _netflix_listed_in_nonempty_where_clause(where_sql)
+    sql = f"""
+SELECT `listed_in` AS `listed_in`, COUNT(*) AS `count`
+FROM {qt}
+{fb_where}
+GROUP BY `listed_in`
+ORDER BY `count` DESC
+LIMIT {int(limit)}
+""".strip()
+    return sql, "fallback_grouped_string", False
+
+
+def _chart_row_keys(rows: list[dict[str, Any]]) -> set[str]:
+    if not rows or not isinstance(rows[0], dict):
+        return set()
+    try:
+        return set(rows[0].keys())
+    except Exception:
+        return set()
+
+
+def _chart_infer_category_key(
+    rows: list[dict[str, Any]],
+    group_col: Optional[str],
+    prefer: Optional[list[str]] = None,
+) -> Optional[str]:
+    ks = _chart_row_keys(rows)
+    if not ks:
+        return None
+    if prefer:
+        for k in prefer:
+            if k and k in ks:
+                return k
+    for k in ("group_key", "listed_in"):
+        if k in ks:
+            return k
+    if group_col and group_col in ks:
+        return group_col
+    return None
+
+
+def _chart_infer_value_key(
+    rows: list[dict[str, Any]],
+    operation: str,
+    metric_col: Optional[str],
+) -> Optional[str]:
+    ks = _chart_row_keys(rows)
+    for k in ("sum", "count", "avg"):
+        if k in ks:
+            return k
+    if metric_col and metric_col in ks:
+        return metric_col
+    return None
+
+
+def _build_chart_suggestion(
+    operation: str,
+    group_col: Optional[str],
+    metric_col: Optional[str],
+    rows: list[dict[str, Any]],
+    semantic_meta: dict[str, Any],
+    limit: int,
+) -> dict[str, Any]:
+    """
+    Lightweight chart hint for the frontend (never raises; tolerates odd row shapes).
+    """
+    disabled: dict[str, Any] = {
+        "chart_type": None,
+        "x": None,
+        "y": None,
+        "title": None,
+        "reason": "no_rows",
+        "enabled": False,
+    }
+    try:
+        if not rows:
+            return disabled
+
+        dp_raw = semantic_meta.get("domain_pattern") if isinstance(semantic_meta, dict) else None
+        dp: dict[str, Any] = dp_raw if isinstance(dp_raw, dict) else {}
+        pat = dp.get("pattern") if dp.get("matched") else None
+
+        gc = (group_col or "").strip() if isinstance(group_col, str) else (group_col or None)
+        if not gc:
+            return {
+                "chart_type": "table",
+                "x": None,
+                "y": None,
+                "title": "Results",
+                "reason": "no_group_column",
+                "enabled": True,
+            }
+
+        prefer_x: Optional[list[str]] = None
+        if pat == "top_genres":
+            prefer_x = ["listed_in", "group_key"]
+
+        x_key = _chart_infer_category_key(rows, gc, prefer=prefer_x)
+        y_key = _chart_infer_value_key(rows, operation, metric_col)
+
+        title = "Results"
+        reason = "grouped_aggregate"
+        chart_type: Optional[str] = None
+
+        if pat == "release_trend" and gc == "release_year":
+            chart_type, title, reason = "line", "Releases over time", "domain_release_trend"
+        elif pat == "compare_type":
+            chart_type, title, reason = "pie", "Movies vs TV shows", "domain_compare_type"
+        elif pat == "top_genres":
+            chart_type, title, reason = "bar", "Top genres", "domain_top_genres"
+        elif pat == "top_countries":
+            chart_type, title, reason = "bar", "Content by country", "domain_top_countries"
+        elif pat == "longest_movies":
+            chart_type, title, reason = "bar", "Longest titles", "domain_longest_movies"
+        elif operation in ("top", "count", "sum", "avg"):
+            chart_type, title, reason = "bar", "Grouped results", "generic_grouped_aggregate"
+        else:
+            return {
+                "chart_type": "table",
+                "x": x_key,
+                "y": y_key,
+                "title": title,
+                "reason": "non_aggregated_or_unsupported_operation",
+                "enabled": True,
+            }
+
+        if chart_type in ("bar", "line", "pie") and (not x_key or not y_key):
+            return {
+                "chart_type": "table",
+                "x": x_key,
+                "y": y_key,
+                "title": title,
+                "reason": "unexpected_row_shape",
+                "enabled": True,
+            }
+
+        return {
+            "chart_type": chart_type,
+            "x": x_key,
+            "y": y_key,
+            "title": title,
+            "reason": reason,
+            "enabled": True,
+        }
+    except Exception as exc:
+        return {
+            "chart_type": None,
+            "x": None,
+            "y": None,
+            "title": None,
+            "reason": f"chart_suggestion_error:{type(exc).__name__}",
+            "enabled": False,
+        }
+
+
 def _fmt_answer_num(x: Any) -> str:
     if isinstance(x, float):
         t = f"{x:.6f}".rstrip("0").rstrip(".")
@@ -611,14 +1154,17 @@ def _cols_from_schema_profile(columns_json: Any) -> Optional[list[tuple[str, str
       - [{"name": "...", "type": "..."}]
     or profiled form:
       - [{"name": "...", "type": "...", "profile": {...}}]
+    or wrapped import form:
+      - {"columns": [...], "dataset_summary": {...}}
     Returns list[(name, type)] or None if unusable.
     """
     if not columns_json:
         return None
-    if not isinstance(columns_json, list):
+    cols_list = unwrap_dataset_columns_json(columns_json)
+    if not cols_list:
         return None
     out: list[tuple[str, str]] = []
-    for item in columns_json:
+    for item in cols_list:
         if not isinstance(item, dict):
             continue
         n = item.get("name")
@@ -824,6 +1370,20 @@ async def answer_query(
         "resolved_group_by": group_col,
     }
 
+    # Optional semantic layer: snapshot (always when run) + safe assist (fills gaps only; does not drive operation/SQL).
+    semantic_layer_result: Optional[AnalyticsSemanticResult] = None
+    q_norm = qtext
+    try:
+        semantic_layer_result = analyze_query_semantics(
+            query=q_norm,
+            columns=cols,
+            columns_json=meta.columns_json if meta and meta.columns_json else None,
+            user_lang=(getattr(user, "preferred_language", None) or "en"),
+        )
+        semantic_meta["semantic_layer_v1"] = asdict(semantic_layer_result)
+    except Exception as e:
+        semantic_meta["semantic_layer_v1_error"] = str(e)
+
     # 1) Intent from ML — на тексте после лексических правок (ASR → «amount» и т.д.)
     intent_result = predict_intent(q_lex)
     # ожидаем формат: {"intent": "...", "confidence": 0.0..1.0, "top_k": [...]}
@@ -876,6 +1436,75 @@ async def answer_query(
         metric_col = None
     if group_col and group_col not in col_set:
         group_col = None
+
+    explicit_avg_by = _resolve_explicit_average_by(q_lex, cols)
+    if explicit_avg_by:
+        metric_col, group_col = explicit_avg_by
+        operation = "avg"
+        semantic_meta["resolved_metric"] = metric_col
+        semantic_meta["resolved_group_by"] = group_col
+        semantic_meta["operation_override"] = "explicit_average_by"
+    else:
+        explicit_top_values = _resolve_explicit_top_values(q_lex, cols)
+        if explicit_top_values:
+            operation = "top"
+            metric_col = None
+            group_col = explicit_top_values
+            semantic_meta["resolved_metric"] = None
+            semantic_meta["resolved_group_by"] = group_col
+            semantic_meta["operation_override"] = "explicit_top_values"
+
+    # Safe assist mode (not full semantic control): only fill metric/group when still missing
+    # after legacy resolution + sanitization, and only above confidence thresholds.
+    sl_assist: dict[str, Any] = {
+        "enabled": semantic_layer_result is not None,
+        "metric_used": False,
+        "group_used": False,
+        "reason": "not_needed",
+    }
+    if semantic_layer_result is None:
+        sl_assist["enabled"] = False
+        sl_assist["reason"] = "low_confidence" if semantic_meta.get("semantic_layer_v1_error") else "not_needed"
+    else:
+        dm = semantic_layer_result.detected_metric
+        dd = semantic_layer_result.detected_dimension
+        need_metric = not (metric_col and str(metric_col).strip())
+        need_group = not (group_col and str(group_col).strip())
+        if semantic_meta.get("operation_override") == "explicit_top_values":
+            need_metric = False
+        filled_m = (
+            need_metric
+            and dm is not None
+            and float(dm.score) >= 0.65
+            and dm.column in col_set
+        )
+        filled_g = (
+            need_group
+            and dd is not None
+            and float(dd.score) >= 0.60
+            and dd.column in col_set
+        )
+        if filled_m:
+            metric_col = dm.column
+            sl_assist["metric_used"] = True
+        if filled_g:
+            group_col = dd.column
+            sl_assist["group_used"] = True
+        if filled_m or filled_g:
+            if filled_m and filled_g:
+                sl_assist["reason"] = "filled_missing_metric"
+            elif filled_m:
+                sl_assist["reason"] = "filled_missing_metric"
+            else:
+                sl_assist["reason"] = "filled_missing_group"
+        elif need_metric or need_group:
+            sl_assist["reason"] = "low_confidence"
+        else:
+            sl_assist["reason"] = "not_needed"
+        if sl_assist["metric_used"] or sl_assist["group_used"]:
+            semantic_meta["resolved_metric"] = metric_col
+            semantic_meta["resolved_group_by"] = group_col
+    semantic_meta["semantic_layer_assist"] = sl_assist
 
     params: dict[str, Any] = {}
     where_parts: list[str] = []
@@ -985,6 +1614,59 @@ async def answer_query(
                 "detail": "равенство по колонке вместо GROUP BY",
             }
 
+    netflix = _detect_netflix_query_pattern(q_lex, col_set, semantic_layer_result)
+    semantic_meta["domain_pattern"] = netflix
+    if netflix.get("matched"):
+        oo = semantic_meta.get("operation_override")
+        if oo in _NETFLIX_CONFLICT_OVERRIDES:
+            netflix = {
+                **netflix,
+                "matched": False,
+                "pattern": None,
+                "operation": None,
+                "metric_col": None,
+                "group_col": None,
+                "order_by": None,
+                "debug": {**(netflix.get("debug") or {}), "skipped": "operation_override", "override": oo},
+            }
+            semantic_meta["domain_pattern"] = netflix
+        else:
+            g_n = netflix.get("group_col")
+            m_n = netflix.get("metric_col")
+            op_n = netflix.get("operation")
+            if not g_n or g_n not in col_set:
+                netflix = {
+                    **netflix,
+                    "matched": False,
+                    "pattern": None,
+                    "operation": None,
+                    "metric_col": None,
+                    "group_col": None,
+                    "order_by": None,
+                    "debug": {**(netflix.get("debug") or {}), "reason": "group_col_not_in_schema"},
+                }
+                semantic_meta["domain_pattern"] = netflix
+            elif m_n is not None and m_n not in col_set:
+                netflix = {
+                    **netflix,
+                    "matched": False,
+                    "pattern": None,
+                    "operation": None,
+                    "metric_col": None,
+                    "group_col": None,
+                    "order_by": None,
+                    "debug": {**(netflix.get("debug") or {}), "reason": "metric_col_not_in_schema"},
+                }
+                semantic_meta["domain_pattern"] = netflix
+            else:
+                operation = str(op_n)
+                group_col = g_n
+                metric_col = m_n
+                semantic_meta["resolved_metric"] = metric_col
+                semantic_meta["resolved_group_by"] = group_col
+                if not semantic_meta.get("operation_override"):
+                    semantic_meta["operation_override"] = "netflix_domain_pattern"
+
     where_sql = f" WHERE {' AND '.join(where_parts)} " if where_parts else ""
 
     filter_interpreted: dict[str, Any] = {}
@@ -1008,6 +1690,13 @@ async def answer_query(
             "previous_column": c_prev,
             "expression": f"`{c_new}` - `{c_prev}`",
             "direction": "DESC",
+        }
+
+    dp_dom = semantic_meta.get("domain_pattern") or {}
+    if dp_dom.get("matched") and dp_dom.get("order_by"):
+        filter_interpreted["domain_order"] = {
+            "pattern": dp_dom.get("pattern"),
+            "order_by": dp_dom.get("order_by"),
         }
 
     interpreted: dict[str, Any] = {
@@ -1036,7 +1725,46 @@ async def answer_query(
         if oc in col_set:
             order_sql_select = f" ORDER BY `{oc}` {od} "
 
-    if operation == "top":
+    nf_dom = semantic_meta.get("domain_pattern") or {}
+    nf_pat = nf_dom.get("pattern")
+
+    if operation == "top" and nf_pat == "longest_movies" and group_col and metric_col == "duration":
+        expr_sql = _netflix_duration_agg_expr_sql(metric_col)
+        long_where = where_sql
+        if "type" in col_set:
+            cond = "LOWER(TRIM(CAST(`type` AS CHAR))) = 'movie'"
+            if long_where.strip():
+                long_where = long_where.rstrip() + f" AND {cond} "
+            else:
+                long_where = f" WHERE {cond} "
+        sql = f"""
+            SELECT `{group_col}` AS group_key, {expr_sql} AS `sum`
+            FROM `{table_name}`
+            {long_where}
+            GROUP BY `{group_col}`
+            ORDER BY `sum` DESC
+            LIMIT {limit}
+        """
+
+    elif (
+        operation == "top"
+        and nf_pat == "top_genres"
+        and group_col == "listed_in"
+        and "listed_in" in col_set
+    ):
+        sql, _genre_strat, _genre_split = _netflix_top_genres_listed_in_split_sql(
+            table_name, where_sql, limit, col_set
+        )
+        _dp_nf = dict(semantic_meta.get("domain_pattern") or {})
+        _dbg_nf = dict(_dp_nf.get("debug") or {})
+        _dbg_nf["genre_split"] = bool(_genre_split)
+        _dbg_nf["genre_split_strategy"] = _genre_strat
+        if _genre_strat == "fallback_grouped_string":
+            _dbg_nf["genre_split_fallback"] = "recursive_cte_unsupported_or_mysql_without_show_id"
+        _dp_nf["debug"] = _dbg_nf
+        semantic_meta["domain_pattern"] = _dp_nf
+
+    elif operation == "top":
         if not group_col:
             # на случай если группировка не нашлась — безопасно возвращаем выборку
             sql = f"SELECT * FROM `{table_name}` {where_sql} {order_sql_select} LIMIT {limit}"
@@ -1060,11 +1788,17 @@ async def answer_query(
 
     elif operation == "count":
         if group_col:
+            ord_sql = ""
+            if nf_dom.get("matched") and nf_dom.get("order_by") == "release_year_asc":
+                ord_sql = " ORDER BY `group_key` ASC "
+            elif nf_dom.get("matched") and nf_dom.get("order_by") == "count_desc":
+                ord_sql = " ORDER BY `count` DESC "
             sql = f"""
                 SELECT `{group_col}` AS group_key, COUNT(*) AS `count`
                 FROM `{table_name}`
                 {where_sql}
                 GROUP BY `{group_col}`
+                {ord_sql}
                 LIMIT {limit}
             """
         else:
@@ -1136,6 +1870,26 @@ async def answer_query(
     res = await db.execute(text(sql), params)
     rows = [dict(r._mapping) for r in res.fetchall()]
 
+    _dp_after = semantic_meta.get("domain_pattern") or {}
+    if _dp_after.get("matched") and _dp_after.get("pattern") == "top_genres":
+        for _r in rows:
+            if "listed_in" in _r and "group_key" not in _r:
+                _r["group_key"] = _r["listed_in"]
+
+    try:
+        interpreted["chart"] = _build_chart_suggestion(
+            operation, group_col, metric_col, rows, semantic_meta, limit
+        )
+    except Exception:
+        interpreted["chart"] = {
+            "chart_type": None,
+            "x": None,
+            "y": None,
+            "title": None,
+            "reason": "chart_attach_failed",
+            "enabled": False,
+        }
+
     col_labels = [c[0] for c in cols]
     answer_text = _build_answer_text(
         operation,
@@ -1163,3 +1917,131 @@ async def answer_query(
         }
 
     return out
+
+
+@router.post(
+    "/semantic-debug",
+    response_model=SemanticDebugResponse,
+    summary="Debug NL semantics vs analytics layer (no SQL)",
+    tags=["Query Debug"],
+)
+async def semantic_debug(
+    body: SemanticDebugRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SemanticDebugResponse:
+    """
+    Compare ``resolve_metric_and_group`` with ``analyze_query_semantics`` for a dataset.
+
+    Authenticated like ``/query/answer``; does **not** run answer/analytics SQL.
+    If ``DatasetTableMeta.columns_json`` is empty, the same metadata introspection
+    as ``/query/answer`` may run (e.g. ``INFORMATION_SCHEMA`` / ``PRAGMA``) to load column names.
+    """
+    user_lang = normalize_preferred_language(getattr(user, "preferred_language", "ru"))
+    try:
+        ds = (
+            await db.execute(select(Dataset).where(Dataset.id == body.dataset_id, Dataset.user_id == user.id))
+        ).scalar_one_or_none()
+        if not ds:
+            raise HTTPException(
+                status_code=404,
+                detail=_lt(user_lang, "датасет не найден", "dataset not found", "датасет табылмады"),
+            )
+
+        qtext = _normalize(body.text)
+        if not qtext:
+            raise HTTPException(status_code=400, detail="empty text after normalization")
+
+        table_name = f"ds_{body.dataset_id}_data"
+        meta = (
+            await db.execute(select(DatasetTableMeta).where(DatasetTableMeta.dataset_id == body.dataset_id))
+        ).scalar_one_or_none()
+
+        cols: Optional[list[tuple[str, str]]] = None
+        if meta is not None:
+            cols = _cols_from_schema_profile(meta.columns_json)
+        if not cols:
+            cols = await _get_table_columns(db, table_name)
+        if not cols:
+            raise HTTPException(
+                status_code=404,
+                detail=_lt(
+                    user_lang,
+                    f"таблица {table_name} не найдена или не содержит колонок",
+                    f"table {table_name} not found or has no columns",
+                    f"{table_name} кестесі табылмады немесе бағандары жоқ",
+                ),
+            )
+
+        legacy = SemanticDebugLegacySemantics()
+        try:
+            sem = resolve_metric_and_group(cols, qtext)
+            legacy = SemanticDebugLegacySemantics(
+                resolved_metric=sem.get("metric_col"),
+                resolved_group_by=sem.get("group_col"),
+                query_after_lexical_fixes=sem.get("query_lexical") or "",
+                debug=dict(sem.get("debug") or {}),
+            )
+        except Exception as e:
+            legacy = SemanticDebugLegacySemantics(error=str(e))
+
+        semantic_layer_v1: Optional[dict[str, Any]] = None
+        semantic_layer_error: Optional[str] = None
+        sl_result: Optional[AnalyticsSemanticResult] = None
+        try:
+            sl_result = analyze_query_semantics(
+                query=qtext,
+                columns=cols,
+                columns_json=meta.columns_json if meta and meta.columns_json else None,
+                user_lang=(getattr(user, "preferred_language", None) or "en"),
+            )
+            semantic_layer_v1 = asdict(sl_result)
+        except Exception as e:
+            semantic_layer_error = str(e)
+
+        leg_m = legacy.resolved_metric
+        leg_g = legacy.resolved_group_by
+        sem_m = sl_result.detected_metric.column if sl_result and sl_result.detected_metric else None
+        sem_g = sl_result.detected_dimension.column if sl_result and sl_result.detected_dimension else None
+
+        # When the semantic layer did not run, ``metric_same`` / ``group_same`` are false (not comparable).
+        if sl_result is None:
+            comparison = SemanticDebugComparison(
+                metric_same=False,
+                group_same=False,
+                semantic_metric_better_candidate=None,
+                semantic_group_better_candidate=None,
+            )
+        else:
+            metric_same = leg_m == sem_m
+            group_same = leg_g == sem_g
+            metric_candidate = None if metric_same else sem_m
+            group_candidate = None if group_same else sem_g
+            comparison = SemanticDebugComparison(
+                metric_same=metric_same,
+                group_same=group_same,
+                semantic_metric_better_candidate=metric_candidate,
+                semantic_group_better_candidate=group_candidate,
+            )
+
+        return SemanticDebugResponse(
+            dataset_id=body.dataset_id,
+            query=qtext,
+            table_name=table_name,
+            legacy_semantics=legacy,
+            semantic_layer_v1=semantic_layer_v1,
+            semantic_layer_error=semantic_layer_error,
+            comparison=comparison,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=_lt(
+                user_lang,
+                f"ошибка semantic-debug: {e!s}",
+                f"semantic-debug error: {e!s}",
+                f"semantic-debug қатесі: {e!s}",
+            ),
+        ) from e
