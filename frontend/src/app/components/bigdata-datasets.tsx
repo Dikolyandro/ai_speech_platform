@@ -1,0 +1,1188 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useNavigate } from 'react-router';
+import { motion } from 'motion/react';
+import {
+  BarChart3,
+  CalendarDays,
+  Car,
+  CheckCircle2,
+  CreditCard,
+  Database,
+  FileText,
+  Hash,
+  Info,
+  Loader2,
+  Play,
+  RefreshCw,
+  Search,
+  ShoppingCart,
+  Star,
+  Trash2,
+  TrendingUp,
+  Upload,
+  Users,
+  type LucideIcon,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import { Card } from './ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import {
+  createBigDataChatSample,
+  deleteBigDataDataset,
+  getBigDataDataset,
+  listBigDataDatasets,
+  profileBigDataDataset,
+  registerLocalBigDataFile,
+  uploadBigDataCsv,
+  type BigDataDataset,
+  type BigDataDatasetSummary,
+  type BigDataDatasetStatus,
+  type BigDataChatSampleFilter,
+  type BigDataProfileColumn,
+} from '../../lib/bigdata-api';
+import { useDataset } from '../dataset-context';
+
+const SUPPORTED_BIGDATA_EXTENSIONS = ['.csv', '.csv.gz', '.json', '.jsonl', '.json.gz', '.parquet'];
+const SUPPORTED_BIGDATA_ACCEPT = '.csv,.csv.gz,.json,.jsonl,.json.gz,.parquet,application/json,text/csv,application/octet-stream';
+const SUPPORTED_BIGDATA_TEXT = 'Big Data formats: CSV, CSV.GZ, JSON, JSONL, JSON.GZ, PARQUET.';
+const HELP_TEXT = {
+  columns: 'Number of detected data fields.',
+  datasetFormat: 'The file type used to read and process this dataset.',
+  nullCounts: 'Shows missing or empty values in the dataset.',
+  process: 'Analyze dataset structure and statistics.',
+  rows: 'Total number of records in the dataset.',
+  schema: 'Automatically detected structure and data types.',
+  sparkProfile: 'Automatic analysis of large datasets using Apache Spark.',
+  topValues: 'Most common values detected in the dataset.',
+  chatSample: 'Create a small SQL sample so the chat can answer questions about this data.',
+};
+
+function statusLabel(status: BigDataDatasetStatus) {
+  if (status === 'uploaded') return 'Uploaded';
+  if (status === 'processing') return 'Processing';
+  if (status === 'processed') return 'Processed';
+  if (status === 'failed') return 'Failed';
+  return status;
+}
+
+function statusClass(status: BigDataDatasetStatus) {
+  if (status === 'processed') return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+  if (status === 'processing') return 'bg-amber-500/10 text-amber-300 border-amber-500/20';
+  if (status === 'failed') return 'bg-red-500/10 text-red-400 border-red-500/20';
+  return 'bg-sky-500/10 text-sky-300 border-sky-500/20';
+}
+
+function visibleDatasetError(error: string | null | undefined) {
+  if (!error) return null;
+  return /parquet export|spark parquet/i.test(error) ? null : error;
+}
+
+function formatDate(value: string | null) {
+  if (!value) return '';
+  return new Date(value).toLocaleString();
+}
+
+function formatCount(value: number | null | undefined) {
+  return typeof value === 'number' ? value.toLocaleString() : '-';
+}
+
+function formatDatasetFormat(value: string | null | undefined) {
+  if (!value) return '-';
+  return value
+    .split('.')
+    .map((part) => part.toUpperCase())
+    .join('.');
+}
+
+function renderValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return 'null';
+  return String(value);
+}
+
+function numericText(column: BigDataProfileColumn) {
+  if (!column.numeric) return null;
+  const { min, max, avg } = column.numeric;
+  return `min ${renderValue(min)} / max ${renderValue(max)} / avg ${renderValue(avg)}`;
+}
+
+const COLUMN_LABELS: Record<string, string> = {
+  asin: 'Product ID',
+  dolocationid: 'Dropoff Location ID',
+  fare_amount: 'Fare Amount',
+  image: 'Review Images',
+  overall: 'Rating',
+  passenger_count: 'Passenger Count',
+  payment_type: 'Payment Type',
+  pulocationid: 'Pickup Location ID',
+  reviewText: 'Review Text',
+  reviewerID: 'Reviewer ID',
+  reviewerName: 'Reviewer Name',
+  reviewTime: 'Review Time',
+  summary: 'Review Summary',
+  unixReviewTime: 'Unix Review Time',
+  vendorid: 'Vendor ID',
+  verified: 'Verified Purchase',
+  vote: 'Helpful Votes',
+};
+
+function readableColumnLabel(name: string) {
+  const mapped = COLUMN_LABELS[name] ?? COLUMN_LABELS[name.toLowerCase()];
+  if (mapped) return mapped;
+
+  const withSpaces = name
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/\bid\b/gi, 'ID')
+    .replace(/\bntz\b/gi, 'NTZ')
+    .trim();
+
+  return withSpaces.replace(/\w\S*/g, (word) =>
+    word === word.toUpperCase() ? word : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+  );
+}
+
+function readableDataType(type: string) {
+  const lower = type.toLowerCase();
+  if (lower.includes('int') || lower.includes('long')) return 'Whole number';
+  if (lower.includes('double') || lower.includes('float') || lower.includes('decimal')) return 'Decimal number';
+  if (lower.includes('timestamp') || lower.includes('date')) return 'Date/time';
+  if (lower.includes('bool')) return 'Yes/no';
+  if (lower.includes('array')) return 'List';
+  if (lower.includes('string')) return 'Text';
+  return readableColumnLabel(type);
+}
+
+function normalizedColumnSet(columns: { name: string }[]) {
+  return new Set(columns.map((column) => column.name.toLowerCase().replace(/[^a-z0-9]/g, '')));
+}
+
+function hasColumn(columns: Set<string>, names: string[]) {
+  return names.some((name) => columns.has(name.toLowerCase().replace(/[^a-z0-9]/g, '')));
+}
+
+function hasColumnPart(columns: Set<string>, parts: string[]) {
+  return [...columns].some((name) => parts.some((part) => name.includes(part)));
+}
+
+function datasetSummary(columns: { name: string }[]) {
+  const names = normalizedColumnSet(columns);
+  const hasReviewData =
+    hasColumn(names, ['overall', 'verified', 'reviewText', 'summary', 'asin', 'vote']) ||
+    hasColumnPart(names, ['review', 'rating']);
+  const hasTaxiData =
+    hasColumn(names, ['fare_amount', 'passenger_count', 'payment_type', 'trip_distance']) ||
+    hasColumnPart(names, ['pickup', 'dropoff', 'fare', 'taxi', 'passenger']);
+
+  if (hasTaxiData) {
+    return 'This dataset contains information about taxi trips, passengers, payments, fares, and travel times.';
+  }
+  if (hasReviewData) {
+    return 'This dataset contains customer reviews, ratings, review texts, product identifiers, and purchase information.';
+  }
+  return 'This dataset contains structured analytical data.';
+}
+
+type DatasetCapability = {
+  title: string;
+  description: string;
+  Icon: LucideIcon;
+};
+
+function datasetCapabilities(columns: { name: string; type?: string }[]) {
+  const names = normalizedColumnSet(columns);
+  const capabilities: DatasetCapability[] = [];
+  const add = (condition: boolean, capability: DatasetCapability) => {
+    if (condition && !capabilities.some((item) => item.title === capability.title)) {
+      capabilities.push(capability);
+    }
+  };
+
+  add(hasColumn(names, ['overall', 'rating']) || hasColumnPart(names, ['rating', 'score']), {
+    title: 'Rating analytics',
+    description: 'Compare ratings and distributions.',
+    Icon: Star,
+  });
+  add(hasColumn(names, ['reviewText', 'summary']) || hasColumnPart(names, ['review', 'comment', 'text']), {
+    title: 'Review analytics',
+    description: 'Explore review text and summaries.',
+    Icon: FileText,
+  });
+  add(hasColumn(names, ['asin', 'product_id', 'product']) || hasColumnPart(names, ['product', 'item', 'asin']), {
+    title: 'Product analytics',
+    description: 'Group results by products or items.',
+    Icon: ShoppingCart,
+  });
+  add(hasColumn(names, ['verified']) || hasColumnPart(names, ['purchase', 'verified']), {
+    title: 'Purchase analytics',
+    description: 'Compare verified and non-verified activity.',
+    Icon: CheckCircle2,
+  });
+  add(hasColumn(names, ['trip_distance']) || hasColumnPart(names, ['trip', 'pickup', 'dropoff']), {
+    title: 'Trip analytics',
+    description: 'Analyze routes, distances, and trips.',
+    Icon: Car,
+  });
+  add(hasColumn(names, ['payment_type', 'fare_amount', 'tip_amount', 'total_amount']) || hasColumnPart(names, ['payment', 'fare', 'tip', 'amount']), {
+    title: 'Payment analytics',
+    description: 'Review fares, tips, and payment patterns.',
+    Icon: CreditCard,
+  });
+  add(hasColumn(names, ['passenger_count']) || hasColumnPart(names, ['passenger', 'customer', 'user']), {
+    title: 'Passenger statistics',
+    description: 'Summarize people or customer counts.',
+    Icon: Users,
+  });
+  add(hasColumnPart(names, ['date', 'time', 'timestamp', 'year', 'month']), {
+    title: 'Time trends',
+    description: 'Track changes over days, months, or years.',
+    Icon: TrendingUp,
+  });
+
+  const hasNumericType = columns.some((column) => /(int|long|double|float|decimal|number)/i.test(column.type ?? ''));
+  add(hasNumericType, {
+    title: 'Number summaries',
+    description: 'Calculate totals, averages, and ranges.',
+    Icon: Hash,
+  });
+  add(columns.some((column) => /(date|timestamp)/i.test(column.type ?? '')), {
+    title: 'Date analysis',
+    description: 'Use date fields for trend reports.',
+    Icon: CalendarDays,
+  });
+
+  if (capabilities.length === 0 && columns.length > 0) {
+    capabilities.push({
+      title: 'Field breakdowns',
+      description: 'Count and compare values by field.',
+      Icon: BarChart3,
+    });
+  }
+
+  return capabilities.slice(0, 6);
+}
+
+function InfoTip({ label, text }: { label: string; text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={label}
+          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+        >
+          <Info className="h-3.5 w-3.5" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="max-w-[220px]">
+        {text}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function HelpLabel({ children, tip }: { children: ReactNode; tip: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {children}
+      <InfoTip label="Help information" text={tip} />
+    </span>
+  );
+}
+
+export function BigDataDatasets() {
+  const navigate = useNavigate();
+  const { setDatasetId, refreshDatasets } = useDataset();
+  const [items, setItems] = useState<BigDataDatasetSummary[]>([]);
+  const [selected, setSelected] = useState<BigDataDataset | null>(null);
+  const [filter, setFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadName, setUploadName] = useState('');
+  const [localPath, setLocalPath] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [sampleOpen, setSampleOpen] = useState(false);
+  const [sampleSource, setSampleSource] = useState<BigDataDataset | null>(null);
+  const [sampleName, setSampleName] = useState('');
+  const [sampleRowPreset, setSampleRowPreset] = useState<'1000' | '5000' | '10000' | 'custom'>('5000');
+  const [sampleCustomRows, setSampleCustomRows] = useState('5000');
+  const [sampleMode, setSampleMode] = useState<'first' | 'random'>('first');
+  const [sampleColumns, setSampleColumns] = useState<string[]>([]);
+  const [sampleFilters, setSampleFilters] = useState<BigDataChatSampleFilter[]>([]);
+  const [creatingSample, setCreatingSample] = useState(false);
+  const [createdSample, setCreatedSample] = useState<{ dataset_id: number; name: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await listBigDataDatasets();
+      setItems(result.datasets);
+      if (selected && !result.datasets.some((item) => item.id === selected.id)) {
+        setSelected(null);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not load Big Data datasets');
+    } finally {
+      setLoading(false);
+    }
+  }, [selected]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const filtered = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return items;
+    return items.filter((item) => item.name.toLowerCase().includes(query) || String(item.id).includes(query));
+  }, [filter, items]);
+
+  const openDetails = async (datasetId: number) => {
+    setBusyId(datasetId);
+    try {
+      const dataset = await getBigDataDataset(datasetId);
+      setSelected(dataset);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not open dataset');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onUpload = async (file: File | undefined) => {
+    if (!file) return;
+    const lowerName = file.name.toLowerCase();
+    if (!SUPPORTED_BIGDATA_EXTENSIONS.some((extension) => lowerName.endsWith(extension))) {
+      toast.error(SUPPORTED_BIGDATA_TEXT);
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const dataset = await uploadBigDataCsv(file, uploadName || file.name);
+      toast.success(`Uploaded #${dataset.id}`);
+      setUploadOpen(false);
+      setUploadName('');
+      setSelected(dataset);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const onRegisterLocalFile = async () => {
+    if (!localPath.trim()) {
+      toast.error('Enter a local file path');
+      return;
+    }
+    const lowerPath = localPath.trim().toLowerCase();
+    if (!SUPPORTED_BIGDATA_EXTENSIONS.some((extension) => lowerPath.endsWith(extension))) {
+      toast.error(SUPPORTED_BIGDATA_TEXT);
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const dataset = await registerLocalBigDataFile(localPath.trim(), uploadName || undefined);
+      toast.success(`Registered #${dataset.id}`);
+      setUploadOpen(false);
+      setUploadName('');
+      setLocalPath('');
+      setSelected(dataset);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Local file registration failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const runProfile = async (datasetId: number) => {
+    setBusyId(datasetId);
+    try {
+      const dataset = await profileBigDataDataset(datasetId);
+      setSelected(dataset);
+      await load();
+      toast.success('Spark profile created');
+    } catch (error) {
+      await load();
+      toast.error(error instanceof Error ? error.message : 'Spark processing failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onDelete = async (datasetId: number) => {
+    if (!confirm(`Delete Big Data dataset #${datasetId}?`)) return;
+    setBusyId(datasetId);
+    try {
+      await deleteBigDataDataset(datasetId);
+      if (selected?.id === datasetId) setSelected(null);
+      await load();
+      toast.success('Deleted');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Delete failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const openChatSampleModal = async (datasetId: number) => {
+    setBusyId(datasetId);
+    try {
+      const dataset = await getBigDataDataset(datasetId);
+      setSelected(dataset);
+      if (dataset.status !== 'processed') {
+        toast.error('Process this Big Data dataset before creating a chat sample');
+        return;
+      }
+      const names = (dataset.schema_json?.columns ?? []).map((column) => column.name);
+      if (names.length === 0) {
+        toast.error('No schema columns found. Run Spark processing first.');
+        return;
+      }
+      setSampleSource(dataset);
+      setSampleName(`${dataset.name} chat sample`);
+      setSampleRowPreset('5000');
+      setSampleCustomRows('5000');
+      setSampleMode('first');
+      setSampleColumns(names);
+      setSampleFilters([]);
+      setCreatedSample(null);
+      setSampleOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not open chat sample settings');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const sampleAvailableColumns = useMemo(
+    () => sampleSource?.schema_json?.columns ?? [],
+    [sampleSource]
+  );
+
+  const sampleRowLimit = useMemo(() => {
+    const raw = sampleRowPreset === 'custom' ? sampleCustomRows : sampleRowPreset;
+    const parsed = parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) return 5000;
+    return Math.max(1, Math.min(parsed, 50000));
+  }, [sampleRowPreset, sampleCustomRows]);
+
+  const toggleSampleColumn = (name: string) => {
+    setSampleColumns((prev) =>
+      prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name]
+    );
+  };
+
+  const updateSampleFilter = (index: number, patch: Partial<BigDataChatSampleFilter>) => {
+    setSampleFilters((prev) => prev.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
+  };
+
+  const addSampleFilter = () => {
+    const firstColumn = sampleAvailableColumns[0]?.name;
+    if (!firstColumn) return;
+    setSampleFilters((prev) => [...prev, { column: firstColumn, operator: '=', value: '' }]);
+  };
+
+  const removeSampleFilter = (index: number) => {
+    setSampleFilters((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const createConfiguredChatSample = async () => {
+    if (!sampleSource) return;
+    const name = sampleName.trim();
+    if (!name) {
+      toast.error('Enter a sample dataset name');
+      return;
+    }
+    if (sampleColumns.length === 0) {
+      toast.error('Select at least one column');
+      return;
+    }
+    const filters = sampleFilters
+      .map((item) => ({ ...item, value: item.value.trim() }))
+      .filter((item) => item.value !== '');
+
+    setCreatingSample(true);
+    try {
+      const result = await createBigDataChatSample(sampleSource.id, {
+        name,
+        row_limit: sampleRowLimit,
+        sampling_mode: sampleMode,
+        columns: sampleColumns,
+        filters,
+      });
+      await refreshDatasets();
+      setDatasetId(result.dataset_id);
+      setCreatedSample({ dataset_id: result.dataset_id, name: result.name });
+      toast.success(`Chat sample ready: ${result.rows_sampled} rows`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not create chat sample');
+    } finally {
+      setCreatingSample(false);
+    }
+  };
+
+  const openCreatedSampleInChat = () => {
+    if (createdSample) {
+      setDatasetId(createdSample.dataset_id);
+      navigate('/');
+    }
+  };
+
+  const columns = selected?.profile_json?.columns ?? [];
+  const schemaColumns = selected?.schema_json?.columns ?? [];
+  const overviewSummary = datasetSummary(schemaColumns);
+  const capabilities = datasetCapabilities(schemaColumns);
+
+  return (
+    <div className="h-full p-8 overflow-y-auto">
+      <div className="max-w-7xl mx-auto">
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className="mb-8"
+        >
+          <h1 className="text-3xl font-semibold mb-2 bg-gradient-to-r from-purple-400 to-cyan-300 bg-clip-text text-transparent">
+            Big Data
+          </h1>
+          <p className="text-muted-foreground">
+            Upload large CSV, compressed CSV, JSON Lines, compressed JSON, or Parquet files and inspect Spark profiles.
+          </p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.1 }}
+          className="flex items-center justify-between gap-4 mb-6 flex-wrap"
+        >
+          <div className="relative flex-1 max-w-md min-w-[220px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search Big Data datasets"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              className="pl-10 bg-accent/50 border-border"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="outline" onClick={() => void load()}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+            <Button
+              type="button"
+              className="bg-primary hover:bg-primary/90 shadow-[0_0_20px_rgba(168,85,247,0.3)]"
+              onClick={() => setUploadOpen(true)}
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Upload file
+            </Button>
+          </div>
+        </motion.div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-5">
+          <div>
+            {loading ? (
+              <p className="text-muted-foreground">Loading...</p>
+            ) : filtered.length === 0 ? (
+              <Card className="p-6 border-border text-muted-foreground">
+                No Big Data datasets yet.
+              </Card>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {filtered.map((dataset, index) => (
+                  <motion.div
+                    key={dataset.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.35, delay: index * 0.03 }}
+                  >
+                    <Card className="p-4 hover:bg-accent/50 transition-all border-border h-full flex flex-col">
+                      <div className="flex items-start gap-3 mb-4">
+                        <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                          <Database className="h-5 w-5 text-primary" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-semibold text-sm mb-1 truncate">{dataset.name}</h3>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="outline" className={statusClass(dataset.status)}>
+                              {statusLabel(dataset.status)}
+                            </Badge>
+                            <Badge variant="outline">#{dataset.id}</Badge>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 text-sm mb-4">
+                        <div className="rounded-lg bg-accent/35 p-3">
+                          <p className="text-xs text-muted-foreground">
+                            <HelpLabel tip={HELP_TEXT.rows}>Rows</HelpLabel>
+                          </p>
+                          <p className="font-medium">{dataset.row_count ?? '-'}</p>
+                        </div>
+                        <div className="rounded-lg bg-accent/35 p-3">
+                          <p className="text-xs text-muted-foreground">
+                            <HelpLabel tip={HELP_TEXT.columns}>Columns</HelpLabel>
+                          </p>
+                          <p className="font-medium">{dataset.column_count ?? '-'}</p>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-muted-foreground mb-4 flex-1">
+                        {dataset.status === 'failed'
+                          ? 'Processing failed. Open details to see the reason or create a chat sample.'
+                          : formatDate(dataset.created_at)}
+                      </p>
+
+                      <div className="flex flex-wrap gap-2 pt-3 border-t border-border">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void openDetails(dataset.id)}
+                          disabled={busyId === dataset.id}
+                        >
+                          Details
+                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void openChatSampleModal(dataset.id)}
+                              disabled={busyId === dataset.id}
+                            >
+                              Chat sample
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" sideOffset={6} className="max-w-[230px]">
+                            {HELP_TEXT.chatSample}
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => void runProfile(dataset.id)}
+                              disabled={busyId === dataset.id}
+                            >
+                              {busyId === dataset.id ? (
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              ) : (
+                                <Play className="h-4 w-4 mr-2" />
+                              )}
+                              Process
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" sideOffset={6} className="max-w-[220px]">
+                            {HELP_TEXT.process}
+                          </TooltipContent>
+                        </Tooltip>
+                        <div className="basis-full grid gap-1 text-[11px] leading-4 text-muted-foreground">
+                          <span>Process: Analyze dataset structure and statistics.</span>
+                          <span>Chat sample: Create a smaller SQL dataset for natural-language chat.</span>
+                        </div>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-9 w-9 hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => void onDelete(dataset.id)}
+                          disabled={busyId === dataset.id}
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </Card>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <Card className="p-5 border-border h-fit xl:sticky xl:top-8">
+            {selected ? (
+              <div className="space-y-5">
+                <section className="space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium uppercase tracking-[0.08em] text-primary/80">Dataset Overview</p>
+                      <h2 className="mt-1 truncate text-lg font-semibold">{selected.name}</h2>
+                    </div>
+                    <Badge variant="outline" className={statusClass(selected.status)}>
+                      {statusLabel(selected.status)}
+                    </Badge>
+                  </div>
+
+                  {visibleDatasetError(selected.error) ? (
+                    <div className="rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
+                      {visibleDatasetError(selected.error)}
+                    </div>
+                  ) : null}
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-lg border border-border bg-accent/35 p-3">
+                      <p className="text-xs text-muted-foreground">
+                        <HelpLabel tip={HELP_TEXT.rows}>Records</HelpLabel>
+                      </p>
+                      <p className="mt-1 text-sm font-semibold">{formatCount(selected.row_count)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-accent/35 p-3">
+                      <p className="text-xs text-muted-foreground">
+                        <HelpLabel tip={HELP_TEXT.columns}>Fields</HelpLabel>
+                      </p>
+                      <p className="mt-1 text-sm font-semibold">{formatCount(selected.column_count)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-accent/35 p-3">
+                      <p className="text-xs text-muted-foreground">
+                        <HelpLabel tip={HELP_TEXT.datasetFormat}>Format</HelpLabel>
+                      </p>
+                      <p className="mt-1 text-sm font-semibold">{formatDatasetFormat(selected.format)}</p>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-border bg-accent/20 p-4">
+                  <h3 className="text-sm font-semibold">What this dataset contains</h3>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{overviewSummary}</p>
+                </section>
+
+                <section>
+                  <h3 className="mb-3 text-sm font-semibold">What you can analyze</h3>
+                  {capabilities.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Run Spark processing to see analysis options.</p>
+                  ) : (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {capabilities.map(({ title, description, Icon }) => (
+                        <div key={title} className="rounded-lg border border-border bg-accent/25 p-3">
+                          <div className="flex items-start gap-2">
+                            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                              <Icon className="h-4 w-4" />
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">{title}</p>
+                              <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="rounded-lg border border-border p-4">
+                  <h3 className="text-sm font-semibold">Create Chat Sample</h3>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                    Chat currently works with SQL datasets. This creates a small SQL sample from the Big Data file.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="mt-3"
+                    onClick={() => void openChatSampleModal(selected.id)}
+                    disabled={busyId === selected.id}
+                  >
+                    Create chat sample
+                  </Button>
+                </section>
+
+                <details className="rounded-lg border border-border bg-accent/10">
+                  <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold">
+                    Advanced Details
+                  </summary>
+                  <div className="space-y-5 border-t border-border p-4">
+                    {selected.processed_path ? (
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Processed path</p>
+                        <p className="break-all rounded-lg bg-accent/35 p-3 text-xs">{selected.processed_path}</p>
+                      </div>
+                    ) : null}
+
+                    <div>
+                      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+                        Schema
+                        <InfoTip label="Schema help" text={HELP_TEXT.schema} />
+                      </h3>
+                      {schemaColumns.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">Schema will appear after Spark processing.</p>
+                      ) : (
+                        <div className="max-h-44 overflow-auto rounded-lg border border-border">
+                          {schemaColumns.map((column) => (
+                            <div key={column.name} className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 last:border-b-0">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm">{readableColumnLabel(column.name)}</p>
+                                <p className="truncate text-[11px] text-muted-foreground">{column.name}</p>
+                              </div>
+                              <Badge variant="outline" title={column.type}>
+                                {readableDataType(column.type)}
+                              </Badge>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+                        Spark Profile
+                        <InfoTip label="Spark profile help" text={HELP_TEXT.sparkProfile} />
+                      </h3>
+                      {columns.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">Null counts, numeric stats, and top values will appear here.</p>
+                      ) : (
+                        <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
+                          {columns.map((column) => (
+                            <div key={column.name} className="rounded-lg border border-border p-3">
+                              <div className="flex items-center justify-between gap-2 mb-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium">{readableColumnLabel(column.name)}</p>
+                                  <p className="truncate text-[11px] text-muted-foreground">{column.name}</p>
+                                </div>
+                                <Badge variant="outline" title={column.type}>
+                                  {readableDataType(column.type)}
+                                </Badge>
+                              </div>
+                              <p className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <HelpLabel tip={HELP_TEXT.nullCounts}>Nulls</HelpLabel>: {column.null_count ?? 0}
+                              </p>
+                              {numericText(column) ? (
+                                <p className="text-xs text-muted-foreground mb-2">{numericText(column)}</p>
+                              ) : null}
+                              {column.top_values?.length ? (
+                                <div className="space-y-1">
+                                  <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                    <HelpLabel tip={HELP_TEXT.topValues}>Top values</HelpLabel>
+                                  </p>
+                                  {column.top_values.slice(0, 5).map((item, index) => (
+                                    <div key={`${column.name}-${index}`} className="flex items-center justify-between gap-2 text-xs">
+                                      <span className="truncate text-muted-foreground">{renderValue(item.value)}</span>
+                                      <span>{item.count}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </details>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">
+                Select a Big Data dataset to inspect Spark-generated metadata.
+              </div>
+            )}
+          </Card>
+        </div>
+
+        <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
+          <DialogContent
+            className="border-white/10 bg-[#141420] text-white sm:max-w-md"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Upload Big Data file</DialogTitle>
+              <DialogDescription className="sr-only">
+                Upload or register a supported Big Data file for Spark processing.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div>
+                <Label className="text-white/70">Dataset name</Label>
+                <Input
+                  value={uploadName}
+                  onChange={(event) => setUploadName(event.target.value)}
+                  className="mt-1 bg-white/5 border-white/10"
+                  placeholder="Optional name"
+                />
+              </div>
+              <div>
+                <Label className="text-white/70">Local file path</Label>
+                <div className="mt-1 flex gap-2">
+                  <Input
+                    value={localPath}
+                    onChange={(event) => setLocalPath(event.target.value)}
+                    className="bg-white/5 border-white/10"
+                    placeholder="C:\\Users\\...\\Video_Games.json"
+                  />
+                  <Button type="button" variant="outline" onClick={() => void onRegisterLocalFile()} disabled={uploading}>
+                    Register
+                  </Button>
+                </div>
+              </div>
+              <div
+                className="rounded-lg border border-dashed border-white/20 p-0 text-center transition-colors hover:border-white/35"
+                onDragOver={(event) => {
+                  event.preventDefault();
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  void onUpload(event.dataTransfer.files?.[0]);
+                }}
+              >
+                <button
+                  type="button"
+                  className="w-full rounded-lg px-4 py-8 text-left"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-white/5">
+                    <Upload className="h-5 w-5 text-white/70" />
+                  </div>
+                  <p className="text-center text-sm text-white/80">Drop a supported file here or choose one</p>
+                  <p className="text-center text-xs text-white/45">{SUPPORTED_BIGDATA_TEXT}</p>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={SUPPORTED_BIGDATA_ACCEPT}
+                  className="hidden"
+                  onChange={(event) => void onUpload(event.target.files?.[0])}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setUploadOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                {uploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                Choose file
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={sampleOpen} onOpenChange={setSampleOpen}>
+          <DialogContent
+            className="max-h-[88vh] overflow-y-auto border-white/10 bg-[#141420] text-white sm:max-w-3xl"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Chat sample</DialogTitle>
+              <DialogDescription className="sr-only">
+                Configure a smaller SQL-backed sample from the selected Big Data dataset.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-5">
+              <p className="text-sm text-white/65">
+                Create a smaller working dataset from this large file for fast AI chat analytics.
+              </p>
+
+              <div className="grid gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm sm:grid-cols-3">
+                <div>
+                  <p className="text-xs text-white/45">Source</p>
+                  <p className="truncate font-medium">{sampleSource?.name ?? '-'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/45">Total source rows</p>
+                  <p className="font-medium">{sampleSource?.row_count ?? '-'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/45">Available columns</p>
+                  <p className="font-medium">{sampleAvailableColumns.length}</p>
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-white/70">Sample dataset name</Label>
+                <Input
+                  value={sampleName}
+                  onChange={(event) => setSampleName(event.target.value)}
+                  className="mt-1 bg-white/5 border-white/10"
+                  placeholder="Big Data chat sample"
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <Label className="text-white/70">Row limit</Label>
+                  <select
+                    className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                    value={sampleRowPreset}
+                    onChange={(event) => setSampleRowPreset(event.target.value as '1000' | '5000' | '10000' | 'custom')}
+                  >
+                    <option value="1000">1,000 rows</option>
+                    <option value="5000">5,000 rows</option>
+                    <option value="10000">10,000 rows</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  {sampleRowPreset === 'custom' ? (
+                    <Input
+                      type="number"
+                      min={1}
+                      max={50000}
+                      value={sampleCustomRows}
+                      onChange={(event) => setSampleCustomRows(event.target.value)}
+                      className="mt-2 bg-white/5 border-white/10"
+                      placeholder="Max 50000"
+                    />
+                  ) : null}
+                </div>
+                <div>
+                  <Label className="text-white/70">Sampling mode</Label>
+                  <select
+                    className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                    value={sampleMode}
+                    onChange={(event) => setSampleMode(event.target.value as 'first' | 'random')}
+                  >
+                    <option value="first">First rows</option>
+                    <option value="random">Random sample</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <Label className="text-white/70">Columns</Label>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setSampleColumns(sampleAvailableColumns.map((column) => column.name))}
+                    >
+                      All
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={() => setSampleColumns([])}>
+                      None
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid max-h-56 gap-2 overflow-auto rounded-lg border border-white/10 bg-white/[0.03] p-3 sm:grid-cols-2">
+                  {sampleAvailableColumns.map((column) => (
+                    <label key={column.name} className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-white/5">
+                      <input
+                        type="checkbox"
+                        checked={sampleColumns.includes(column.name)}
+                        onChange={() => toggleSampleColumn(column.name)}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      <span className="truncate">{column.name}</span>
+                      <Badge variant="outline" className="ml-auto shrink-0">
+                        {column.type}
+                      </Badge>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div>
+                    <Label className="text-white/70">Filters</Label>
+                    <p className="text-xs text-white/45">Optional. Empty filter values are ignored.</p>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" onClick={addSampleFilter}>
+                    Add filter
+                  </Button>
+                </div>
+                {sampleFilters.length === 0 ? (
+                  <p className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm text-white/50">
+                    No filters. The sample will use rows from the full dataset.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {sampleFilters.map((filterItem, index) => (
+                      <div key={`${filterItem.column}-${index}`} className="grid gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2 sm:grid-cols-[minmax(0,1fr)_110px_minmax(0,1fr)_40px]">
+                        <select
+                          className="rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                          value={filterItem.column}
+                          onChange={(event) => updateSampleFilter(index, { column: event.target.value })}
+                        >
+                          {sampleAvailableColumns.map((column) => (
+                            <option key={column.name} value={column.name}>
+                              {column.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                          value={filterItem.operator}
+                          onChange={(event) => updateSampleFilter(index, { operator: event.target.value as BigDataChatSampleFilter['operator'] })}
+                        >
+                          <option value="=">=</option>
+                          <option value="!=">!=</option>
+                          <option value=">">&gt;</option>
+                          <option value=">=">&gt;=</option>
+                          <option value="<">&lt;</option>
+                          <option value="<=">&lt;=</option>
+                          <option value="contains">contains</option>
+                        </select>
+                        <Input
+                          value={filterItem.value}
+                          onChange={(event) => updateSampleFilter(index, { value: event.target.value })}
+                          className="bg-white/5 border-white/10"
+                          placeholder="Value"
+                        />
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-10 w-10 hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => removeSampleFilter(index)}
+                          title="Remove filter"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {createdSample ? (
+                <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+                  Created SQL dataset #{createdSample.dataset_id}: {createdSample.name}
+                </div>
+              ) : null}
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setSampleOpen(false)}>
+                Close
+              </Button>
+              {createdSample ? (
+                <Button type="button" onClick={openCreatedSampleInChat}>
+                  Open in Chat
+                </Button>
+              ) : null}
+              <Button type="button" onClick={() => void createConfiguredChatSample()} disabled={creatingSample}>
+                {creatingSample ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                Create Sample
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </div>
+  );
+}

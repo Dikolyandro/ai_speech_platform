@@ -1,0 +1,61 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+@keyframes mascotFloat {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(-0.5deg);
+  }
+}
+
+@keyframes mascotBlink {
+  0%, 88%, 100% {
+    transform: scaleY(1);
+  }
+  91%, 94% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes mascotLidBlink {
+  0%, 87%, 95%, 100% {
+    opacity: 0;
+    transform: scaleY(0.02);
+  }
+  89% {
+    opacity: 0.96;
+    transform: scaleY(0.82);
+  }
+  90.5%, 91.8% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+  93% {
+    opacity: 0.8;
+    transform: scaleY(0.35);
+  }
+}
+
+.mascot-eye-lid {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 48% 38%, #251042 0%, #130520 62%, #080211 100%);
+  transform-origin: center;
+  animation: mascotLidBlink 5.4s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+
+.mascot-eye-lid::after {
+  content: '';
+  position: absolute;
+  left: 28%;
+  right: 28%;
+  top: 47%;
+  height: 8%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(168, 85, 247, 0.1), rgba(216, 180, 254, 0.95), rgba(168, 85, 247, 0.1));
+  box-shadow: 0 0 7px rgba(168, 85, 247, 0.34);
+}
