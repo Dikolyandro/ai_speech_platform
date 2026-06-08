@@ -114,6 +114,13 @@ export async function getBigDataDataset(datasetId: number) {
   return apiJson<BigDataDataset>(`/api/v1/bigdata/datasets/${datasetId}`);
 }
 
+export async function renameBigDataDataset(datasetId: number, name: string) {
+  return apiJson<BigDataDataset>(`/api/v1/bigdata/datasets/${datasetId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  });
+}
+
 export async function profileBigDataDataset(datasetId: number, topN = 10) {
   return apiJson<BigDataDataset>(
     `/api/v1/bigdata/datasets/${datasetId}/profile?top_n=${encodeURIComponent(String(topN))}`,

@@ -147,6 +147,7 @@ async def startup():
             privacy_columns = {
                 ("datasets", "is_private"): "ALTER TABLE `datasets` ADD COLUMN `is_private` BOOLEAN NOT NULL DEFAULT TRUE",
                 ("bigdata_datasets", "is_private"): "ALTER TABLE `bigdata_datasets` ADD COLUMN `is_private` BOOLEAN NOT NULL DEFAULT TRUE",
+                ("saved_queries", "custom_title"): "ALTER TABLE `saved_queries` ADD COLUMN `custom_title` VARCHAR(255) NULL",
             }
             for (table_name, column_name), ddl in privacy_columns.items():
                 col_exists = (
@@ -200,6 +201,7 @@ async def startup():
                 privacy_columns = {
                     ("datasets", "is_private"): "ALTER TABLE datasets ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 1",
                     ("bigdata_datasets", "is_private"): "ALTER TABLE bigdata_datasets ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 1",
+                    ("saved_queries", "custom_title"): "ALTER TABLE saved_queries ADD COLUMN custom_title VARCHAR(255) NULL",
                 }
                 for (table_name, column_name), ddl in privacy_columns.items():
                     table_exists = (

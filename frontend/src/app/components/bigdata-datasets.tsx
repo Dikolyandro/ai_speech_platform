@@ -12,6 +12,7 @@ import {
   Hash,
   Info,
   Loader2,
+  Pencil,
   Play,
   RefreshCw,
   Search,
@@ -45,6 +46,7 @@ import {
   listBigDataDatasets,
   profileBigDataDataset,
   registerLocalBigDataFile,
+  renameBigDataDataset,
   uploadBigDataCsv,
   type BigDataDataset,
   type BigDataDatasetSummary,
@@ -325,6 +327,9 @@ export function BigDataDatasets() {
   const [sampleFilters, setSampleFilters] = useState<BigDataChatSampleFilter[]>([]);
   const [creatingSample, setCreatingSample] = useState(false);
   const [createdSample, setCreatedSample] = useState<{ dataset_id: number; name: string } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<BigDataDatasetSummary | BigDataDataset | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -442,6 +447,45 @@ export function BigDataDatasets() {
       toast.error(error instanceof Error ? error.message : 'Delete failed');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const openRename = (dataset: BigDataDatasetSummary | BigDataDataset) => {
+    setRenameTarget(dataset);
+    setRenameName(dataset.name);
+  };
+
+  const submitRename = async () => {
+    if (!renameTarget) return;
+    const nextName = renameName.trim();
+    if (!nextName) {
+      toast.error('Name is required');
+      return;
+    }
+    if (nextName.length > 255) {
+      toast.error('Name must be 255 characters or fewer');
+      return;
+    }
+
+    const id = renameTarget.id;
+    const previousItems = items;
+    const previousSelected = selected;
+    setRenaming(true);
+    setItems((current) => current.map((item) => (item.id === id ? { ...item, name: nextName } : item)));
+    setSelected((current) => (current?.id === id ? { ...current, name: nextName } : current));
+    try {
+      const updated = await renameBigDataDataset(id, nextName);
+      setItems((current) => current.map((item) => (item.id === id ? { ...item, name: updated.name } : item)));
+      setSelected((current) => (current?.id === id ? updated : current));
+      setSampleSource((current) => (current?.id === id ? updated : current));
+      setRenameTarget(null);
+      toast.success('Dataset renamed');
+    } catch (error) {
+      setItems(previousItems);
+      setSelected(previousSelected);
+      toast.error(error instanceof Error ? error.message : 'Rename failed');
+    } finally {
+      setRenaming(false);
     }
   };
 
@@ -583,7 +627,7 @@ export function BigDataDatasets() {
               placeholder="Search Big Data datasets"
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
-              className="pl-10 bg-accent/50 border-border"
+              className="pl-10 bg-accent/50 border-border !text-white !caret-white placeholder:!text-white/45"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -625,12 +669,24 @@ export function BigDataDatasets() {
                           <Database className="h-5 w-5 text-primary" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <h3 className="font-semibold text-sm mb-1 truncate">{dataset.name}</h3>
+                          <div className="mb-1 flex min-w-0 items-center gap-1.5">
+                            <h3 className="min-w-0 truncate text-sm font-semibold">{dataset.name}</h3>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                              title="Rename dataset"
+                              onClick={() => openRename(dataset)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className={statusClass(dataset.status)}>
                               {statusLabel(dataset.status)}
                             </Badge>
-                            <Badge variant="outline">#{dataset.id}</Badge>
+                            <Badge variant="outline" className="!text-white/70">#{dataset.id}</Badge>
                           </div>
                         </div>
                       </div>
@@ -732,7 +788,19 @@ export function BigDataDatasets() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-xs font-medium uppercase tracking-[0.08em] text-primary/80">Dataset Overview</p>
-                      <h2 className="mt-1 truncate text-lg font-semibold">{selected.name}</h2>
+                      <div className="mt-1 flex min-w-0 items-center gap-1.5">
+                        <h2 className="min-w-0 truncate text-lg font-semibold">{selected.name}</h2>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 shrink-0 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                          title="Rename dataset"
+                          onClick={() => openRename(selected)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </div>
                     <Badge variant="outline" className={statusClass(selected.status)}>
                       {statusLabel(selected.status)}
@@ -839,7 +907,7 @@ export function BigDataDatasets() {
                                 <p className="truncate text-sm">{readableColumnLabel(column.name)}</p>
                                 <p className="truncate text-[11px] text-muted-foreground">{column.name}</p>
                               </div>
-                              <Badge variant="outline" title={column.type}>
+                              <Badge variant="outline" className="!text-white/70" title={column.type}>
                                 {readableDataType(column.type)}
                               </Badge>
                             </div>
@@ -864,7 +932,7 @@ export function BigDataDatasets() {
                                   <p className="truncate text-sm font-medium">{readableColumnLabel(column.name)}</p>
                                   <p className="truncate text-[11px] text-muted-foreground">{column.name}</p>
                                 </div>
-                                <Badge variant="outline" title={column.type}>
+                                <Badge variant="outline" className="!text-white/70" title={column.type}>
                                   {readableDataType(column.type)}
                                 </Badge>
                               </div>
@@ -903,6 +971,41 @@ export function BigDataDatasets() {
           </Card>
         </div>
 
+        <Dialog open={Boolean(renameTarget)} onOpenChange={(open) => !open && setRenameTarget(null)}>
+          <DialogContent
+            className="border-white/10 bg-[#141420] text-white sm:max-w-md"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Rename dataset</DialogTitle>
+              <DialogDescription className="sr-only">
+                Change the display name of this Big Data dataset.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label className="text-white/70">Dataset name</Label>
+              <Input
+                value={renameName}
+                maxLength={255}
+                onChange={(event) => setRenameName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void submitRename();
+                }}
+                className="bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
+              />
+              <p className="text-xs text-white/45">{renameName.length}/255</p>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRenameTarget(null)}>
+                Close
+              </Button>
+              <Button type="button" onClick={() => void submitRename()} disabled={renaming}>
+                Save
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
           <DialogContent
             className="border-white/10 bg-[#141420] text-white sm:max-w-md"
@@ -920,7 +1023,7 @@ export function BigDataDatasets() {
                 <Input
                   value={uploadName}
                   onChange={(event) => setUploadName(event.target.value)}
-                  className="mt-1 bg-white/5 border-white/10"
+                  className="mt-1 bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
                   placeholder="Optional name"
                 />
               </div>
@@ -930,7 +1033,7 @@ export function BigDataDatasets() {
                   <Input
                     value={localPath}
                     onChange={(event) => setLocalPath(event.target.value)}
-                    className="bg-white/5 border-white/10"
+                    className="bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
                     placeholder="C:\\Users\\...\\Video_Games.json"
                   />
                   <Button type="button" variant="outline" onClick={() => void onRegisterLocalFile()} disabled={uploading}>
@@ -1017,7 +1120,7 @@ export function BigDataDatasets() {
                 <Input
                   value={sampleName}
                   onChange={(event) => setSampleName(event.target.value)}
-                  className="mt-1 bg-white/5 border-white/10"
+                  className="mt-1 bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
                   placeholder="Big Data chat sample"
                 />
               </div>
@@ -1026,7 +1129,7 @@ export function BigDataDatasets() {
                 <div>
                   <Label className="text-white/70">Row limit</Label>
                   <select
-                    className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm !text-white focus:outline-none focus:ring-2 focus:ring-primary [&>option]:bg-[#1d1d2b] [&>option]:text-white"
                     value={sampleRowPreset}
                     onChange={(event) => setSampleRowPreset(event.target.value as '1000' | '5000' | '10000' | 'custom')}
                   >
@@ -1042,7 +1145,7 @@ export function BigDataDatasets() {
                       max={50000}
                       value={sampleCustomRows}
                       onChange={(event) => setSampleCustomRows(event.target.value)}
-                      className="mt-2 bg-white/5 border-white/10"
+                      className="mt-2 bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
                       placeholder="Max 50000"
                     />
                   ) : null}
@@ -1050,7 +1153,7 @@ export function BigDataDatasets() {
                 <div>
                   <Label className="text-white/70">Sampling mode</Label>
                   <select
-                    className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm !text-white focus:outline-none focus:ring-2 focus:ring-primary [&>option]:bg-[#1d1d2b] [&>option]:text-white"
                     value={sampleMode}
                     onChange={(event) => setSampleMode(event.target.value as 'first' | 'random')}
                   >
@@ -1086,8 +1189,8 @@ export function BigDataDatasets() {
                         onChange={() => toggleSampleColumn(column.name)}
                         className="h-4 w-4 accent-primary"
                       />
-                      <span className="truncate">{column.name}</span>
-                      <Badge variant="outline" className="ml-auto shrink-0">
+                      <span className="truncate text-white">{column.name}</span>
+                      <Badge variant="outline" className="ml-auto shrink-0 border-white/10 bg-white/5 !text-white/70">
                         {column.type}
                       </Badge>
                     </label>
@@ -1114,7 +1217,7 @@ export function BigDataDatasets() {
                     {sampleFilters.map((filterItem, index) => (
                       <div key={`${filterItem.column}-${index}`} className="grid gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2 sm:grid-cols-[minmax(0,1fr)_110px_minmax(0,1fr)_40px]">
                         <select
-                          className="rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                          className="rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm !text-white focus:outline-none focus:ring-2 focus:ring-primary [&>option]:bg-[#1d1d2b] [&>option]:text-white"
                           value={filterItem.column}
                           onChange={(event) => updateSampleFilter(index, { column: event.target.value })}
                         >
@@ -1125,7 +1228,7 @@ export function BigDataDatasets() {
                           ))}
                         </select>
                         <select
-                          className="rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                          className="rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm !text-white focus:outline-none focus:ring-2 focus:ring-primary [&>option]:bg-[#1d1d2b] [&>option]:text-white"
                           value={filterItem.operator}
                           onChange={(event) => updateSampleFilter(index, { operator: event.target.value as BigDataChatSampleFilter['operator'] })}
                         >
@@ -1140,7 +1243,7 @@ export function BigDataDatasets() {
                         <Input
                           value={filterItem.value}
                           onChange={(event) => updateSampleFilter(index, { value: event.target.value })}
-                          className="bg-white/5 border-white/10"
+                          className="bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
                           placeholder="Value"
                         />
                         <Button

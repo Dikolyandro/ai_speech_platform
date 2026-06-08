@@ -172,6 +172,7 @@ class SavedQuery(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     workspace_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
     title: Mapped[str] = mapped_column(String(255), default="Saved query")
+    custom_title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     query_text: Mapped[str] = mapped_column(Text, nullable=False)
     sql_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     answer_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

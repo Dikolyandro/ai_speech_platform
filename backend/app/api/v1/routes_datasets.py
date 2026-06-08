@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,10 @@ class AddDocReq(BaseModel):
     title: str = ""
     text: str
     chunk_size: int = 500
+
+
+class RenameDatasetReq(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
 
 
 def _extract_bigdata_sample_meta(raw: Any) -> dict[str, Any] | None:
@@ -100,6 +104,34 @@ async def create_dataset(
     await db.refresh(ds)
     audit_log("dataset.create", user_id=user.id, dataset_id=ds.id, workspace_id=ds.workspace_id, is_private=ds.is_private)
     return {"dataset_id": ds.id}
+
+
+@router.patch("/{dataset_id}")
+async def rename_dataset(
+    dataset_id: int,
+    req: RenameDatasetReq,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="dataset name is required")
+    ds = (
+        await db.execute(select(Dataset).where(Dataset.id == dataset_id, Dataset.user_id == user.id))
+    ).scalar_one_or_none()
+    if not ds:
+        raise HTTPException(status_code=404, detail="dataset not found")
+    ds.name = name[:255]
+    await db.commit()
+    await db.refresh(ds)
+    audit_log("dataset.rename", user_id=user.id, dataset_id=dataset_id)
+    return {
+        "id": ds.id,
+        "name": ds.name,
+        "workspace_id": ds.workspace_id,
+        "created_at": ds.created_at.isoformat() if ds.created_at else None,
+        "is_private": bool(getattr(ds, "is_private", True)),
+    }
 
 
 @router.get("/{dataset_id}/overview")

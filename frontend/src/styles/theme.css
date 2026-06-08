@@ -181,10 +181,40 @@
     font-size: var(--text-base);
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
+    color: var(--foreground);
+    caret-color: var(--primary);
   }
 
   textarea {
     color: var(--foreground);
     caret-color: var(--primary);
+  }
+
+  select {
+    color: var(--foreground);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .dark input,
+  .dark textarea,
+  .dark select,
+  [data-theme='dark'] input,
+  [data-theme='dark'] textarea,
+  [data-theme='dark'] select {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    caret-color: var(--primary) !important;
+  }
+
+  .dark input::placeholder,
+  .dark textarea::placeholder,
+  [data-theme='dark'] input::placeholder,
+  [data-theme='dark'] textarea::placeholder {
+    color: rgba(255, 255, 255, 0.45) !important;
+    -webkit-text-fill-color: rgba(255, 255, 255, 0.45) !important;
   }
 }

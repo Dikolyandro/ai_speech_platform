@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { Search, Eye, Trash2, FileSpreadsheet, Database as DatabaseIcon, Upload, FileText } from 'lucide-react';
+import { Search, Eye, Trash2, FileSpreadsheet, Database as DatabaseIcon, Upload, FileText, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { Button } from './ui/button';
@@ -20,6 +20,7 @@ import {
   deleteDataset,
   importCsvFile,
   listDatasets,
+  renameDataset,
   uploadDocumentFile,
   type DatasetListItem,
 } from '../../lib/api';
@@ -37,6 +38,9 @@ export function UploadedDatasets() {
   const [uploading, setUploading] = useState(false);
   const [docOpen, setDocOpen] = useState(false);
   const [docTargetId, setDocTargetId] = useState<number | null>(null);
+  const [renameTarget, setRenameTarget] = useState<DatasetListItem | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
 
@@ -109,6 +113,41 @@ export function UploadedDatasets() {
     }
   };
 
+  const openRename = (dataset: DatasetListItem) => {
+    setRenameTarget(dataset);
+    setRenameName(dataset.name);
+  };
+
+  const submitRename = async () => {
+    if (!renameTarget) return;
+    const nextName = renameName.trim();
+    if (!nextName) {
+      toast.error('Name is required');
+      return;
+    }
+    if (nextName.length > 255) {
+      toast.error('Name must be 255 characters or fewer');
+      return;
+    }
+
+    const id = renameTarget.id;
+    const previous = items;
+    setRenaming(true);
+    setItems((current) => current.map((item) => (item.id === id ? { ...item, name: nextName } : item)));
+    try {
+      const updated = await renameDataset(id, nextName);
+      setItems((current) => current.map((item) => (item.id === id ? { ...item, ...updated } : item)));
+      setRenameTarget(null);
+      toast.success('Dataset renamed');
+      await refreshDatasets();
+    } catch (e) {
+      setItems(previous);
+      toast.error(e instanceof Error ? e.message : t('common.error'));
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   return (
     <div className="h-full p-8">
       <div className="max-w-6xl mx-auto">
@@ -171,9 +210,21 @@ export function UploadedDatasets() {
                       <FileSpreadsheet className="h-5 w-5 text-primary" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-sm mb-1 truncate group-hover:text-primary transition-colors">
-                        {dataset.name}
-                      </h3>
+                      <div className="mb-1 flex min-w-0 items-center gap-1.5">
+                        <h3 className="min-w-0 truncate text-sm font-semibold transition-colors group-hover:text-primary">
+                          {dataset.name}
+                        </h3>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                          title="Rename dataset"
+                          onClick={() => openRename(dataset)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                       <Badge variant="outline" className="bg-green-500/10 text-green-400 border-green-500/20">
                         #{dataset.id} · {dataset.table_name}
                       </Badge>
@@ -308,6 +359,38 @@ export function UploadedDatasets() {
             <DialogFooter>
               <Button variant="outline" onClick={() => setUploadOpen(false)}>
                 {t('common.close')}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={Boolean(renameTarget)} onOpenChange={(open) => !open && setRenameTarget(null)}>
+          <DialogContent
+            className="border-white/10 bg-[#141420] text-white sm:max-w-md"
+            onOpenAutoFocus={(e) => e.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Rename dataset</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label className="text-white/70">Dataset name</Label>
+              <Input
+                value={renameName}
+                maxLength={255}
+                onChange={(e) => setRenameName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitRename();
+                }}
+                className="bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
+              />
+              <p className="text-xs text-white/45">{renameName.length}/255</p>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRenameTarget(null)}>
+                {t('common.close')}
+              </Button>
+              <Button type="button" onClick={() => void submitRename()} disabled={renaming}>
+                Save
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -27,32 +27,59 @@ export type AutoChartProps = {
   compact?: boolean;
 };
 
-const PIE_COLORS = [
-  'rgba(167, 139, 250, 0.9)',
-  'rgba(139, 92, 246, 0.9)',
-  'rgba(196, 181, 253, 0.9)',
-  'rgba(109, 40, 217, 0.85)',
-  'rgba(216, 180, 254, 0.85)',
-  'rgba(124, 58, 237, 0.85)',
-  'rgba(233, 213, 255, 0.8)',
-  'rgba(91, 33, 182, 0.85)',
+type VisualType = 'vertical-bar' | 'horizontal-bar' | 'donut' | 'line' | 'histogram';
+
+type ChartPoint = {
+  x: string;
+  y: number;
+  fullLabel: string;
+};
+
+type PreparedChart = {
+  type: VisualType;
+  title: string;
+  data: ChartPoint[];
+  xKey: string;
+  yKey: string;
+  recordCount: number;
+  groupedRemainder: number;
+  originalCategoryCount: number;
+  longestLabelLength: number;
+};
+
+const CHART_COLORS = [
+  '#8B7CFF',
+  '#22C55E',
+  '#60A5FA',
+  '#F59E0B',
+  '#EC4899',
+  '#14B8A6',
+  '#A78BFA',
+  '#F87171',
+  '#38BDF8',
+  '#C084FC',
+  '#34D399',
+  '#FBBF24',
+  '#818CF8',
+  '#FB7185',
+  '#2DD4BF',
+  '#94A3B8',
 ];
 
 const tooltipStyle = {
-  background: 'rgba(15,15,20,0.96)',
-  border: '1px solid rgba(255,255,255,0.14)',
-  borderRadius: 8,
-  color: 'rgba(255,255,255,0.92)',
+  background: 'rgba(255,255,255,0.98)',
+  border: '1px solid rgba(226,221,247,0.95)',
+  borderRadius: 12,
+  color: '#111827',
   fontSize: 12,
-  boxShadow: '0 12px 30px rgba(0,0,0,0.35)',
+  boxShadow: '0 18px 46px rgba(17,24,39,0.14)',
 };
 
-const tooltipLabelStyle = { color: 'rgba(255,255,255,0.86)' };
-const tooltipItemStyle = { color: 'rgba(255,255,255,0.92)' };
-
-function solidColor(color: string): string {
-  return color.replace(/rgba\(([^,]+),([^,]+),([^,]+),[^)]+\)/, 'rgb($1,$2,$3)');
-}
+const tooltipLabelStyle = { color: '#111827', fontWeight: 600 };
+const tooltipItemStyle = { color: '#374151' };
+const axisTick = { fill: 'rgba(107,114,128,0.95)', fontSize: 11 };
+const compactAxisTick = { fill: 'rgba(107,114,128,0.95)', fontSize: 9 };
+const gridStroke = 'rgba(226,221,247,0.72)';
 
 function downloadDataUrl(dataUrl: string, filename: string) {
   const a = document.createElement('a');
@@ -68,6 +95,232 @@ function filenameFromTitle(title: string) {
   return `${slug || 'chart'}.png`;
 }
 
+function titleCase(value: string) {
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim()
+    .replace(/\w\S*/g, (word) => {
+      const upper = word.toUpperCase();
+      if (['ID', 'URL', 'SQL', 'CSV'].includes(upper)) return upper;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    });
+}
+
+function truncateLabel(value: string, max = 22) {
+  if (value.length <= max) return value;
+  return `${value.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
+}
+
+function safeLabel(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
+}
+
+function safeNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = parseFloat(value.replace(/,/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  }
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  return 0;
+}
+
+function isBooleanLabel(value: string) {
+  return /^(true|false|yes|no|0|1|verified|non-verified|non verified)$/i.test(value.trim());
+}
+
+function isDateLabel(value: string) {
+  const trimmed = value.trim();
+  if (/^\d{4}(-\d{1,2})?(-\d{1,2})?$/.test(trimmed)) return true;
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(trimmed)) return true;
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) && /[a-zA-Z]|[-/]/.test(trimmed);
+}
+
+function isNumericLabel(value: string) {
+  if (!value.trim()) return false;
+  return Number.isFinite(Number(value.replace(/,/g, '')));
+}
+
+function isPercentageChart(chart: QueryAnswerChart, points: ChartPoint[]) {
+  const haystack = `${chart.title ?? ''} ${chart.reason ?? ''} ${chart.y ?? ''}`.toLowerCase();
+  if (/percent|percentage|share|ratio|rate/.test(haystack)) return true;
+  const total = points.reduce((sum, point) => sum + Math.max(0, point.y), 0);
+  return points.length > 1 && points.length <= 8 && total > 98 && total < 102;
+}
+
+function buildRawPoints(rows: unknown[], xKey: string, yKey: string): ChartPoint[] {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const points: ChartPoint[] = [];
+  rows.forEach((row, index) => {
+    if (!row || typeof row !== 'object') return;
+    const rec = row as Record<string, unknown>;
+    if (!(xKey in rec) || !(yKey in rec)) return;
+    const fullLabel = safeLabel(rec[xKey]).trim() || `(${index + 1})`;
+    points.push({ x: fullLabel, fullLabel, y: safeNumber(rec[yKey]) });
+  });
+  return points;
+}
+
+function aggregateLongTail(points: ChartPoint[], compact: boolean) {
+  if (points.length <= 20) return { data: points, groupedRemainder: 0 };
+
+  const limit = compact ? 8 : 15;
+  const sorted = [...points].sort((a, b) => Math.abs(b.y) - Math.abs(a.y));
+  const top = sorted.slice(0, limit);
+  const rest = sorted.slice(limit);
+  const otherValue = rest.reduce((sum, item) => sum + item.y, 0);
+  return {
+    data: [
+      ...top,
+      {
+        x: 'Other',
+        fullLabel: `Other (${rest.length} categories)`,
+        y: otherValue,
+      },
+    ],
+    groupedRemainder: rest.length,
+  };
+}
+
+function buildHistogram(points: ChartPoint[], compact: boolean): ChartPoint[] {
+  const values = points.map((point) => Number(point.fullLabel.replace(/,/g, ''))).filter(Number.isFinite);
+  if (values.length < 6) return points;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) return [{ x: String(min), fullLabel: String(min), y: points.length }];
+  const binCount = compact ? 6 : Math.min(12, Math.max(6, Math.ceil(Math.sqrt(values.length))));
+  const step = (max - min) / binCount;
+  const bins = Array.from({ length: binCount }, (_, i) => {
+    const start = min + i * step;
+    const end = i === binCount - 1 ? max : start + step;
+    const label = `${formatBin(start)}-${formatBin(end)}`;
+    return { x: label, fullLabel: label, y: 0 };
+  });
+  values.forEach((value) => {
+    const idx = Math.min(binCount - 1, Math.max(0, Math.floor((value - min) / step)));
+    bins[idx].y += 1;
+  });
+  return bins;
+}
+
+function formatBin(value: number) {
+  if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+function inferTitle(chart: QueryAnswerChart, type: VisualType, xKey: string, yKey: string) {
+  const provided = chart.title?.trim();
+  if (provided && !/^grouped results$/i.test(provided) && !/^chart$/i.test(provided)) return provided;
+
+  const x = titleCase(xKey);
+  const y = titleCase(yKey);
+  if (type === 'line') return `${y} by ${x}`;
+  if (type === 'histogram') return `Distribution of ${x}`;
+  if (type === 'donut') return `${x} Breakdown`;
+  if (/count|row|records?/i.test(yKey)) return `${x} by Record Count`;
+  return `${y} by ${x}`;
+}
+
+function inferChartType(chart: QueryAnswerChart, points: ChartPoint[], compact: boolean): VisualType {
+  const requested = chart.chart_type;
+  const labels = points.map((point) => point.fullLabel);
+  const categoryCount = points.length;
+  const longestLabel = Math.max(...labels.map((label) => label.length), 0);
+  const lowerText = `${chart.title ?? ''} ${chart.reason ?? ''} ${chart.x ?? ''} ${chart.y ?? ''}`.toLowerCase();
+  const booleanLike = categoryCount > 1 && categoryCount <= 4 && labels.every(isBooleanLabel);
+  const dateLike = labels.length > 1 && labels.filter(isDateLabel).length / labels.length >= 0.7;
+  const numericLike = labels.length > 6 && labels.filter(isNumericLabel).length / labels.length >= 0.85;
+
+  if (dateLike || requested === 'line') return 'line';
+  if (booleanLike || requested === 'pie' || isPercentageChart(chart, points)) return 'donut';
+  if (/histogram|distribution/.test(lowerText) || numericLike) return 'histogram';
+  if (categoryCount > 10 || longestLabel > 18 || compact) return 'horizontal-bar';
+  return 'vertical-bar';
+}
+
+function prepareChart(
+  chart: QueryAnswerChart,
+  rows: unknown[],
+  compact: boolean,
+): PreparedChart | null {
+  if (!chart.x || !chart.y || !Array.isArray(rows) || rows.length === 0) return null;
+  const xKey = String(chart.x);
+  const yKey = String(chart.y);
+  const raw = buildRawPoints(rows, xKey, yKey);
+  if (!raw.length) return null;
+
+  const originalCategoryCount = raw.length;
+  const longestLabelLength = Math.max(...raw.map((point) => point.fullLabel.length), 0);
+  let type = inferChartType(chart, raw, compact);
+  let data = raw;
+  let groupedRemainder = 0;
+
+  if (type === 'histogram') {
+    data = buildHistogram(raw, compact);
+  } else if (type === 'line') {
+    data = [...raw].sort((a, b) => {
+      const ad = Date.parse(a.fullLabel);
+      const bd = Date.parse(b.fullLabel);
+      if (Number.isFinite(ad) && Number.isFinite(bd)) return ad - bd;
+      const an = Number(a.fullLabel.replace(/,/g, ''));
+      const bn = Number(b.fullLabel.replace(/,/g, ''));
+      if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
+      return a.fullLabel.localeCompare(b.fullLabel);
+    });
+  } else if (type === 'donut') {
+    const aggregated = aggregateLongTail(raw, compact);
+    data = aggregated.data;
+    groupedRemainder = aggregated.groupedRemainder;
+  } else {
+    const aggregated = aggregateLongTail(raw, compact);
+    data = aggregated.data;
+    groupedRemainder = aggregated.groupedRemainder;
+    if (originalCategoryCount > 10 || longestLabelLength > 18) type = 'horizontal-bar';
+  }
+
+  data = data.map((point) => ({
+    ...point,
+    x: truncateLabel(point.fullLabel, type === 'horizontal-bar' ? 28 : compact ? 10 : 16),
+  }));
+
+  return {
+    type,
+    title: inferTitle(chart, type, xKey, yKey),
+    data,
+    xKey,
+    yKey,
+    recordCount: rows.length,
+    groupedRemainder,
+    originalCategoryCount,
+    longestLabelLength,
+  };
+}
+
+function metadataText(prepared: PreparedChart) {
+  const typeLabel =
+    prepared.type === 'vertical-bar'
+      ? 'Bar Chart'
+      : prepared.type === 'horizontal-bar'
+        ? 'Horizontal Bar Chart'
+        : prepared.type === 'donut'
+          ? 'Donut Chart'
+          : prepared.type === 'histogram'
+            ? 'Histogram'
+            : 'Line Chart';
+  const metric = prepared.type === 'histogram' ? 'Frequency' : titleCase(prepared.yKey);
+  return `${typeLabel} • Grouped by ${titleCase(prepared.xKey)} • ${metric} • ${prepared.recordCount.toLocaleString()} records`;
+}
+
 function drawText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -75,36 +328,48 @@ function drawText(
   y: number,
   maxWidth: number,
   font: string,
-  color = '#f4f0ff'
+  color = '#111827',
+  align: CanvasTextAlign = 'left',
 ) {
   ctx.font = font;
   ctx.fillStyle = color;
+  ctx.textAlign = align;
   const ellipsis = '...';
   let out = text;
   while (ctx.measureText(out).width > maxWidth && out.length > ellipsis.length) {
     out = `${out.slice(0, -4)}${ellipsis}`;
   }
   ctx.fillText(out, x, y);
+  ctx.textAlign = 'left';
 }
 
 function drawRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const radius = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
   ctx.closePath();
 }
 
-function downloadChartAsPng(
-  chartType: string,
-  title: string,
-  data: { x: string; y: number }[],
-) {
+function drawGrid(ctx: CanvasRenderingContext2D, left: number, top: number, width: number, height: number) {
+  ctx.strokeStyle = '#E9E7F5';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 5; i++) {
+    const y = top + (height / 5) * i;
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(left + width, y);
+    ctx.stroke();
+  }
+}
+
+function downloadChartAsPng(prepared: PreparedChart) {
   const scale = 2;
-  const width = 900;
-  const height = 560;
+  const width = 1600;
+  const height = 900;
   const canvas = document.createElement('canvas');
   canvas.width = width * scale;
   canvas.height = height * scale;
@@ -112,204 +377,179 @@ function downloadChartAsPng(
   if (!ctx) return;
   ctx.scale(scale, scale);
 
-  ctx.fillStyle = '#0b0911';
+  ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, width, height);
-  drawRoundedRect(ctx, 28, 28, width - 56, height - 56, 28);
-  ctx.fillStyle = '#17151f';
+  const bg = ctx.createLinearGradient(0, 0, width, height);
+  bg.addColorStop(0, '#FFFFFF');
+  bg.addColorStop(1, '#F7F5FF');
+  ctx.fillStyle = bg;
+  drawRoundedRect(ctx, 48, 44, width - 96, height - 88, 32);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.13)';
-  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#E2DDF7';
+  ctx.lineWidth = 2;
   ctx.stroke();
 
-  drawText(ctx, title, 56, 76, width - 112, '600 24px Inter, Arial, sans-serif');
+  drawText(ctx, prepared.title, 84, 102, width - 168, '700 34px Inter, Arial, sans-serif');
+  drawText(ctx, metadataText(prepared), 84, 142, width - 168, '500 17px Inter, Arial, sans-serif', '#6B7280');
 
-  const values = data.map((d) => Math.max(0, d.y));
-  const max = Math.max(...values, 1);
+  const data = prepared.data;
+  const max = Math.max(...data.map((d) => Math.max(0, d.y)), 1);
+  const left = prepared.type === 'horizontal-bar' ? 360 : 132;
+  const top = 190;
+  const chartW = width - left - 120;
+  const chartH = 560;
 
-  if (chartType === 'pie') {
-    const total = values.reduce((sum, value) => sum + value, 0) || 1;
-    const cx = 330;
-    const cy = 305;
-    const outer = 145;
-    const inner = 70;
+  if (prepared.type === 'donut') {
+    const total = data.reduce((sum, value) => sum + Math.max(0, value.y), 0) || 1;
+    const cx = 500;
+    const cy = 475;
+    const outer = 220;
+    const inner = 112;
     let start = -Math.PI / 2;
     data.forEach((item, i) => {
       const angle = (Math.max(0, item.y) / total) * Math.PI * 2;
       ctx.beginPath();
-      ctx.moveTo(cx, cy);
       ctx.arc(cx, cy, outer, start, start + angle);
+      ctx.arc(cx, cy, inner, start + angle, start, true);
       ctx.closePath();
-      ctx.fillStyle = solidColor(PIE_COLORS[i % PIE_COLORS.length]);
+      ctx.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
       ctx.fill();
-      ctx.strokeStyle = '#0b0911';
-      ctx.lineWidth = 4;
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 6;
       ctx.stroke();
       start += angle;
     });
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.beginPath();
-    ctx.arc(cx, cy, inner, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalCompositeOperation = 'source-over';
-
-    data.slice(0, 10).forEach((item, i) => {
-      const y = 165 + i * 34;
-      ctx.fillStyle = solidColor(PIE_COLORS[i % PIE_COLORS.length]);
+    drawText(ctx, total.toLocaleString(), cx, cy - 8, 260, '800 34px Inter, Arial, sans-serif', '#111827', 'center');
+    drawText(ctx, 'total', cx, cy + 28, 260, '500 18px Inter, Arial, sans-serif', '#6B7280', 'center');
+    data.slice(0, 12).forEach((item, i) => {
+      const y = 265 + i * 42;
+      ctx.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
       ctx.beginPath();
-      ctx.arc(570, y - 6, 7, 0, Math.PI * 2);
+      ctx.arc(900, y - 7, 9, 0, Math.PI * 2);
       ctx.fill();
-      drawText(ctx, item.x, 590, y, 170, '500 16px Inter, Arial, sans-serif', '#eee9ff');
-      drawText(ctx, String(item.y), 780, y, 70, '600 16px Inter, Arial, sans-serif', '#cfc6ee');
+      drawText(ctx, item.fullLabel, 925, y, 340, '600 18px Inter, Arial, sans-serif');
+      drawText(ctx, item.y.toLocaleString(), 1320, y, 140, '700 18px Inter, Arial, sans-serif', '#374151', 'right');
     });
-  } else if (chartType === 'bar') {
-    const left = 78;
-    const top = 120;
-    const chartW = 760;
-    const chartH = 330;
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  } else if (prepared.type === 'horizontal-bar') {
+    ctx.strokeStyle = '#E9E7F5';
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
-      const y = top + (chartH / 4) * i;
+      const x = left + (chartW / 4) * i;
       ctx.beginPath();
-      ctx.moveTo(left, y);
-      ctx.lineTo(left + chartW, y);
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, top + chartH);
       ctx.stroke();
     }
-    const gap = 12;
-    const barW = Math.max(14, (chartW - gap * (data.length - 1)) / Math.max(data.length, 1));
-    data.slice(0, 20).forEach((item, i) => {
-      const h = (Math.max(0, item.y) / max) * (chartH - 20);
-      const x = left + i * (barW + gap);
-      const y = top + chartH - h;
-      ctx.fillStyle = '#a78bfa';
-      drawRoundedRect(ctx, x, y, barW, h, 6);
+    const rowH = Math.min(42, chartH / Math.max(data.length, 1));
+    data.forEach((item, i) => {
+      const y = top + i * rowH + 7;
+      const w = (Math.max(0, item.y) / max) * chartW;
+      const grad = ctx.createLinearGradient(left, y, left + w, y);
+      grad.addColorStop(0, '#B7AEFF');
+      grad.addColorStop(1, '#8B7CFF');
+      ctx.fillStyle = grad;
+      drawRoundedRect(ctx, left, y, w, Math.max(10, rowH - 14), 8);
       ctx.fill();
-      drawText(ctx, item.x, x, top + chartH + 28, Math.max(barW + 18, 48), '500 11px Inter, Arial, sans-serif', '#bdb6cf');
+      drawText(ctx, item.fullLabel, 84, y + rowH / 2 + 2, left - 112, '600 16px Inter, Arial, sans-serif', '#374151');
+      drawText(ctx, item.y.toLocaleString(), left + w + 12, y + rowH / 2 + 2, 110, '600 15px Inter, Arial, sans-serif', '#6B7280');
     });
   } else {
-    const left = 78;
-    const top = 120;
-    const chartW = 760;
-    const chartH = 330;
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = top + (chartH / 4) * i;
+    drawGrid(ctx, left, top, chartW, chartH);
+    if (prepared.type === 'line') {
+      const points = data.map((item, i, arr) => ({
+        x: left + (arr.length <= 1 ? chartW / 2 : (chartW / (arr.length - 1)) * i),
+        y: top + chartH - (Math.max(0, item.y) / max) * (chartH - 16),
+        label: item.fullLabel,
+      }));
+      ctx.strokeStyle = '#8B7CFF';
+      ctx.lineWidth = 5;
       ctx.beginPath();
-      ctx.moveTo(left, y);
-      ctx.lineTo(left + chartW, y);
+      points.forEach((point, i) => (i ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)));
       ctx.stroke();
+      points.forEach((point, i) => {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = CHART_COLORS[i % CHART_COLORS.length];
+        ctx.lineWidth = 4;
+        ctx.stroke();
+      });
+      points.forEach((point, i) => {
+        if (i % Math.ceil(points.length / 10) === 0) {
+          drawText(ctx, point.label, point.x - 45, top + chartH + 34, 90, '500 13px Inter, Arial, sans-serif', '#6B7280');
+        }
+      });
+    } else {
+      const gap = Math.max(10, Math.min(22, chartW / Math.max(data.length, 1) * 0.18));
+      const barW = Math.max(20, (chartW - gap * (data.length - 1)) / Math.max(data.length, 1));
+      data.forEach((item, i) => {
+        const h = (Math.max(0, item.y) / max) * (chartH - 18);
+        const x = left + i * (barW + gap);
+        const y = top + chartH - h;
+        const grad = ctx.createLinearGradient(x, y, x, y + h);
+        grad.addColorStop(0, '#8B7CFF');
+        grad.addColorStop(1, '#B7AEFF');
+        ctx.fillStyle = grad;
+        drawRoundedRect(ctx, x, y, barW, h, 10);
+        ctx.fill();
+        drawText(ctx, item.fullLabel, x - 8, top + chartH + 34, barW + 22, '500 13px Inter, Arial, sans-serif', '#6B7280');
+      });
     }
-    const points = data.slice(0, 20).map((item, i, arr) => ({
-      x: left + (arr.length <= 1 ? chartW / 2 : (chartW / (arr.length - 1)) * i),
-      y: top + chartH - (Math.max(0, item.y) / max) * (chartH - 20),
-      label: item.x,
-    }));
-    ctx.strokeStyle = '#c4b5fd';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    points.forEach((point, i) => (i ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)));
-    ctx.stroke();
-    points.forEach((point) => {
-      ctx.fillStyle = '#a78bfa';
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
-      ctx.fill();
-      drawText(ctx, point.label, point.x - 24, top + chartH + 28, 70, '500 11px Inter, Arial, sans-serif', '#bdb6cf');
-    });
   }
 
-  downloadDataUrl(canvas.toDataURL('image/png'), filenameFromTitle(title));
+  drawText(ctx, prepared.groupedRemainder ? `Top categories shown; ${prepared.groupedRemainder} grouped into Other.` : 'Source: AI analytics result', 84, 820, width - 168, '500 16px Inter, Arial, sans-serif', '#6B7280');
+  downloadDataUrl(canvas.toDataURL('image/png'), filenameFromTitle(prepared.title));
 }
 
-function PieLegend({
-  data,
-  compact,
-}: {
-  data: { x: string; y: number }[];
-  compact: boolean;
-}) {
+function CustomTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload as ChartPoint | undefined;
+  const value = payload[0]?.value;
   return (
-    <div className={cn('min-w-0 shrink-0 space-y-1.5', compact ? 'w-[86px]' : 'w-[130px]')}>
-      {data.slice(0, compact ? 4 : 8).map((item, i) => (
-        <div key={`${item.x}-${i}`} className="flex min-w-0 items-center gap-1.5 text-[10px] leading-tight text-white/75">
+    <div style={tooltipStyle} className="max-w-[280px] px-3 py-2">
+      <div style={tooltipLabelStyle} className="break-words text-xs">
+        {row?.fullLabel ?? label}
+      </div>
+      <div style={tooltipItemStyle} className="mt-1 text-xs">
+        Value: {Number(value ?? 0).toLocaleString()}
+      </div>
+    </div>
+  );
+}
+
+function PieLegend({ data, compact }: { data: ChartPoint[]; compact: boolean }) {
+  return (
+    <div className={cn('min-w-0 shrink-0 space-y-1.5', compact ? 'w-[92px]' : 'w-[150px]')}>
+      {data.slice(0, compact ? 5 : 10).map((item, i) => (
+        <div
+          key={`${item.fullLabel}-${i}`}
+          className="flex min-w-0 items-center gap-1.5 text-[10px] leading-tight text-white/75"
+          title={item.fullLabel}
+        >
           <span
             className="h-2 w-2 shrink-0 rounded-full"
-            style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
+            style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
           />
           <span className="min-w-0 flex-1 truncate">{item.x}</span>
-          <span className="shrink-0 text-white/55">{item.y}</span>
+          <span className="shrink-0 text-white/55">{item.y.toLocaleString()}</span>
         </div>
       ))}
     </div>
   );
 }
 
-function safeLabel(v: unknown): string {
-  if (v == null) return '';
-  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-    return String(v);
-  }
-  try {
-    return JSON.stringify(v);
-  } catch {
-    return '';
-  }
-}
-
-function safeNumber(v: unknown): number {
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string') {
-    const n = parseFloat(v.replace(/,/g, ''));
-    return Number.isFinite(n) ? n : 0;
-  }
-  if (typeof v === 'boolean') return v ? 1 : 0;
-  return 0;
-}
-
-function buildChartPoints(
-  rows: unknown[],
-  xKey: string,
-  yKey: string,
-  maxPoints: number,
-): { label: string; value: number }[] {
-  if (!Array.isArray(rows) || rows.length === 0) return [];
-  const out: { label: string; value: number }[] = [];
-  for (let i = 0; i < rows.length && out.length < maxPoints; i++) {
-    const row = rows[i];
-    if (!row || typeof row !== 'object') continue;
-    const rec = row as Record<string, unknown>;
-    if (!(xKey in rec) || !(yKey in rec)) continue;
-    const label = safeLabel(rec[xKey]).trim() || `(${i})`;
-    const value = safeNumber(rec[yKey]);
-    out.push({ label, value });
-  }
-  return out;
-}
-
 /**
- * Renders a small Recharts visualization from ``interpreted.chart`` + ``rows``.
- * Never throws; returns null when chart should not be shown.
+ * Renders an adaptive Recharts visualization from ``interpreted.chart`` + ``rows``.
+ * All preparation is frontend-only, so backend analytics behavior is preserved.
  */
 export function AutoChart({ chart, rows, compact = false }: AutoChartProps) {
   try {
-    if (!chart || chart.enabled === false) return null;
-    const ct = chart.chart_type;
-    if (!ct || ct === 'table') return null;
-    if (!chart.x || !chart.y) return null;
-    if (!Array.isArray(rows) || rows.length === 0) return null;
-
-    const xKey = String(chart.x);
-    const yKey = String(chart.y);
-    const points = buildChartPoints(rows, xKey, yKey, 20);
-    if (points.length === 0) return null;
-
-    const data = points.map((p) => ({ x: p.label, y: p.value }));
-
-    const title = chart.title?.trim() || 'Chart';
-
-    const axisTick = { fill: 'rgba(255,255,255,0.55)', fontSize: 10 };
-    const gridStroke = 'rgba(255,255,255,0.08)';
+    if (!chart || chart.enabled === false || chart.chart_type === 'table') return null;
+    const prepared = prepareChart(chart, rows, compact);
+    if (!prepared || prepared.data.length === 0) return null;
+    const heightClass = compact ? 'h-[190px]' : prepared.type === 'horizontal-bar' ? 'h-[360px]' : 'h-[300px]';
+    const tick = compact ? compactAxisTick : axisTick;
 
     return (
       <Card
@@ -319,8 +559,17 @@ export function AutoChart({ chart, rows, compact = false }: AutoChartProps) {
           'rounded-xl overflow-hidden',
         )}
       >
-        <CardHeader className={cn('flex flex-row items-center justify-between gap-2 space-y-0 px-3 pb-0', compact ? 'py-1.5' : 'py-2')}>
-          <CardTitle className="text-xs font-medium text-white/80 tracking-tight truncate">{title}</CardTitle>
+        <CardHeader className={cn('flex flex-row items-start justify-between gap-2 space-y-0 px-3 pb-0', compact ? 'py-1.5' : 'py-2.5')}>
+          <div className="min-w-0">
+            <CardTitle className="truncate text-xs font-medium tracking-tight text-white/85" title={prepared.title}>
+              {prepared.title}
+            </CardTitle>
+            {!compact && prepared.groupedRemainder > 0 && (
+              <p className="mt-1 text-[10px] text-white/45">
+                Showing top categories; {prepared.groupedRemainder} grouped into Other.
+              </p>
+            )}
+          </div>
           <Button
             type="button"
             size="icon"
@@ -329,79 +578,116 @@ export function AutoChart({ chart, rows, compact = false }: AutoChartProps) {
               'shrink-0 rounded-md border border-violet-400/30 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20 hover:text-white',
               compact ? 'h-6 w-6' : 'h-7 w-7'
             )}
-            title="Download PNG"
-            aria-label="Download PNG"
-            onClick={() => downloadChartAsPng(ct, title, data)}
+            title="Download high-resolution PNG"
+            aria-label="Download high-resolution PNG"
+            onClick={() => downloadChartAsPng(prepared)}
           >
             <Download className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
           </Button>
         </CardHeader>
-        <CardContent className={cn('px-2 pb-2 pt-0', compact ? 'h-[170px]' : 'h-[280px]')}>
-          {ct === 'pie' ? (
+        <CardContent className={cn('px-2 pb-2 pt-1', heightClass)}>
+          {prepared.type === 'donut' ? (
             <div className="flex h-full items-center gap-2">
               <div className="h-full min-w-0 flex-1">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      labelStyle={tooltipLabelStyle}
-                      itemStyle={tooltipItemStyle}
-                    />
+                    <Tooltip content={<CustomTooltip />} />
                     <Pie
-                      data={data}
+                      data={prepared.data}
                       dataKey="y"
                       nameKey="x"
                       cx="50%"
                       cy="50%"
-                      innerRadius={compact ? 26 : 44}
-                      outerRadius={compact ? 54 : 92}
+                      innerRadius={compact ? 30 : 54}
+                      outerRadius={compact ? 58 : 100}
                       paddingAngle={2}
                     >
-                      {data.map((_, i) => (
-                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} stroke="rgba(0,0,0,0.2)" />
+                      {prepared.data.map((_, i) => (
+                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} stroke="rgba(12,10,18,0.45)" />
                       ))}
                     </Pie>
                   </PieChart>
                 </ResponsiveContainer>
               </div>
-              <PieLegend data={data} compact={compact} />
+              <PieLegend data={prepared.data} compact={compact} />
             </div>
           ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            {ct === 'bar' ? (
-              <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
-                <XAxis dataKey="x" tick={axisTick} interval={0} angle={-28} textAnchor="end" height={56} />
-                <YAxis tick={axisTick} width={36} />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  labelStyle={tooltipLabelStyle}
-                  itemStyle={tooltipItemStyle}
-                />
-                <Bar dataKey="y" fill="rgba(167, 139, 250, 0.85)" radius={[4, 4, 0, 0]} maxBarSize={48} />
-              </BarChart>
-            ) : ct === 'line' ? (
-              <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                <XAxis dataKey="x" tick={axisTick} interval={0} angle={-20} textAnchor="end" height={52} />
-                <YAxis tick={axisTick} width={36} />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  labelStyle={tooltipLabelStyle}
-                  itemStyle={tooltipItemStyle}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="y"
-                  stroke="rgba(196, 181, 253, 0.95)"
-                  strokeWidth={2}
-                  dot={{ r: 3, fill: 'rgba(167, 139, 250, 0.95)' }}
-                />
-              </LineChart>
-            ) : null}
-          </ResponsiveContainer>
+            <ResponsiveContainer width="100%" height="100%">
+              {prepared.type === 'horizontal-bar' ? (
+                <BarChart
+                  data={prepared.data}
+                  layout="vertical"
+                  margin={{ top: 8, right: compact ? 8 : 22, left: compact ? 42 : 96, bottom: 4 }}
+                >
+                  <defs>
+                    <linearGradient id="barGradientH" x1="0" x2="1" y1="0" y2="0">
+                      <stop offset="0%" stopColor="#B7AEFF" stopOpacity={0.92} />
+                      <stop offset="100%" stopColor="#8B7CFF" stopOpacity={0.98} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} horizontal={false} />
+                  <XAxis type="number" tick={tick} />
+                  <YAxis
+                    type="category"
+                    dataKey="x"
+                    tick={tick}
+                    width={compact ? 52 : 110}
+                    interval={0}
+                  />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="y" fill="url(#barGradientH)" radius={[0, 8, 8, 0]} maxBarSize={compact ? 18 : 26} />
+                </BarChart>
+              ) : prepared.type === 'line' ? (
+                <LineChart data={prepared.data} margin={{ top: 8, right: 12, left: 0, bottom: compact ? 18 : 34 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                  <XAxis
+                    dataKey="x"
+                    tick={tick}
+                    interval="preserveStartEnd"
+                    minTickGap={compact ? 18 : 28}
+                    angle={prepared.longestLabelLength > 8 && !compact ? -18 : 0}
+                    textAnchor={prepared.longestLabelLength > 8 && !compact ? 'end' : 'middle'}
+                    height={compact ? 34 : 54}
+                  />
+                  <YAxis tick={tick} width={38} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Line
+                    type="monotone"
+                    dataKey="y"
+                    stroke="#B7AEFF"
+                    strokeWidth={2.4}
+                    dot={{ r: compact ? 2 : 3, fill: '#8B7CFF', stroke: '#F7F5FF', strokeWidth: 1 }}
+                    activeDot={{ r: 5 }}
+                  />
+                </LineChart>
+              ) : (
+                <BarChart data={prepared.data} margin={{ top: 8, right: 12, left: 0, bottom: compact ? 18 : 48 }}>
+                  <defs>
+                    <linearGradient id="barGradientV" x1="0" x2="0" y1="0" y2="1">
+                      <stop offset="0%" stopColor="#8B7CFF" stopOpacity={0.98} />
+                      <stop offset="100%" stopColor="#B7AEFF" stopOpacity={0.86} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
+                  <XAxis
+                    dataKey="x"
+                    tick={tick}
+                    interval={0}
+                    angle={prepared.longestLabelLength > 10 || prepared.data.length > 6 ? -28 : 0}
+                    textAnchor={prepared.longestLabelLength > 10 || prepared.data.length > 6 ? 'end' : 'middle'}
+                    height={compact ? 40 : 68}
+                  />
+                  <YAxis tick={tick} width={38} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="y" fill="url(#barGradientV)" radius={[8, 8, 0, 0]} maxBarSize={compact ? 26 : 46} />
+                </BarChart>
+              )}
+            </ResponsiveContainer>
           )}
         </CardContent>
+        <div className="border-t border-white/10 px-3 py-2 text-[10px] leading-relaxed text-white/45">
+          {metadataText(prepared)}
+        </div>
       </Card>
     );
   } catch {

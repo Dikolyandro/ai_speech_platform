@@ -52,6 +52,7 @@ interface Message {
   answerPayload?: Record<string, unknown>;
   userQuery?: string;
   conversationalIntent?: string;
+  responseTimeMs?: number;
 }
 
 const WAVEFORM_BAR_COUNT = 54;
@@ -366,6 +367,11 @@ function hasVisibleChart(payload: Record<string, unknown> | undefined): boolean 
   return Boolean(chart?.enabled !== false && chart?.chart_type && chart.chart_type !== 'table');
 }
 
+function formatResponseTime(ms: number): string {
+  if (ms < 1000) return `Generated in ${Math.round(ms)} ms`;
+  return `Generated in ${(ms / 1000).toFixed(2)} s`;
+}
+
 function mapDtoToMessage(m: ChatMessageDto): Message {
   const meta = m.meta_json as {
     answer?: Record<string, unknown>;
@@ -631,13 +637,15 @@ export function ChatSession() {
           return;
         }
 
+        const startedAt = performance.now();
         const answer = await postQueryAnswer({
           dataset_id: dsId,
           input: { type: 'text', text: queryForApi },
           options: { limit: 20, explain: true, confidence_threshold: 0.55 },
         });
+        const responseTimeMs = performance.now() - startedAt;
 
-        await appendChatMessage(sid, {
+        const assistantMessage = await appendChatMessage(sid, {
           role: 'assistant',
           content: answer.answer_text,
           meta_json: {
@@ -648,6 +656,13 @@ export function ChatSession() {
         });
 
         await loadMessages(sid);
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === String(assistantMessage.id)
+              ? { ...message, responseTimeMs }
+              : message
+          )
+        );
       } catch (e) {
         if (activeSid != null) {
           await appendChatMessage(activeSid, {
@@ -1084,13 +1099,15 @@ export function ChatSession() {
         return;
       }
 
+      const startedAt = performance.now();
       const answer = await postQueryAnswer({
         dataset_id: datasetId,
         input: { type: 'voice', job_id: asr.job_id },
         options: { limit: 20, explain: true, confidence_threshold: 0.55 },
       });
+      const responseTimeMs = performance.now() - startedAt;
 
-      await appendChatMessage(sid, {
+      const assistantMessage = await appendChatMessage(sid, {
         role: 'assistant',
         content: answer.answer_text,
         meta_json: {
@@ -1101,6 +1118,13 @@ export function ChatSession() {
         },
       });
       await loadMessages(sid);
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === String(assistantMessage.id)
+            ? { ...message, responseTimeMs }
+            : message
+        )
+      );
       setRecordingState('idle');
       setRecordingDuration(0);
       setRecordedBlob(null);
@@ -1633,6 +1657,11 @@ export function ChatSession() {
                           hour: '2-digit',
                           minute: '2-digit',
                         })}
+                      </p>
+                    )}
+                    {message.type === 'assistant' && typeof message.responseTimeMs === 'number' && Number.isFinite(message.responseTimeMs) && (
+                      <p className="mt-1 text-xs text-white/40">
+                        {formatResponseTime(message.responseTimeMs)}
                       </p>
                     )}
                   </div>

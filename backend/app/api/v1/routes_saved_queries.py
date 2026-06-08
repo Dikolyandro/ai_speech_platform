@@ -29,11 +29,17 @@ class PatchSavedQueryBody(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
 
 
+class PatchVisualizationTitleBody(BaseModel):
+    custom_title: Optional[str] = Field(default=None, max_length=255)
+
+
 def _out(q: SavedQuery) -> dict[str, Any]:
     return {
         "id": q.id,
         "workspace_id": q.workspace_id,
         "title": q.title,
+        "generated_title": q.title,
+        "custom_title": q.custom_title,
         "query_text": q.query_text,
         "sql_text": q.sql_text,
         "answer_text": q.answer_text,
@@ -101,6 +107,28 @@ async def patch_saved_query(
     if not q:
         raise HTTPException(status_code=404, detail="saved query not found")
     q.title = body.title.strip()
+    await db.commit()
+    await db.refresh(q)
+    return _out(q)
+
+
+@router.patch("/{query_id}/visualization-title")
+async def patch_visualization_title(
+    query_id: int,
+    body: PatchVisualizationTitleBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    q = (
+        await db.execute(select(SavedQuery).where(SavedQuery.id == query_id, SavedQuery.user_id == user.id))
+    ).scalar_one_or_none()
+    if not q:
+        raise HTTPException(status_code=404, detail="saved visualization not found")
+    if body.custom_title is None:
+        q.custom_title = None
+    else:
+        cleaned = body.custom_title.strip()
+        q.custom_title = cleaned or None
     await db.commit()
     await db.refresh(q)
     return _out(q)

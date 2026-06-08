@@ -1,15 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { motion } from 'motion/react';
-import { BarChart3, MessageSquare, Search, Trash2 } from 'lucide-react';
+import { BarChart3, MessageSquare, Pencil, Search, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Card } from './ui/card';
-import { deleteSavedQuery, listSavedQueries, type SavedQueryDto } from '../../lib/api';
+import {
+  deleteSavedQuery,
+  listSavedQueries,
+  updateSavedVisualizationTitle,
+  type SavedQueryDto,
+} from '../../lib/api';
 import { useI18n } from '../i18n/context';
 import { AutoChart } from './analytics/AutoChart';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
 
 function savedAnswer(item: SavedQueryDto): Record<string, unknown> | null {
   return item.result_json && typeof item.result_json === 'object'
@@ -39,12 +51,19 @@ function hasVisual(item: SavedQueryDto): boolean {
   return Boolean(chart?.enabled && chart.chart_type && chart.chart_type !== 'table');
 }
 
+function visualTitle(item: SavedQueryDto) {
+  return item.custom_title?.trim() || item.generated_title?.trim() || item.title;
+}
+
 export function SavedVisuals() {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [queries, setQueries] = useState<SavedQueryDto[]>([]);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
+  const [renameTarget, setRenameTarget] = useState<SavedQueryDto | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [renaming, setRenaming] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,11 +88,51 @@ export function SavedVisuals() {
     if (!q) return visualItems;
     return visualItems.filter(
       (x) =>
+        visualTitle(x).toLowerCase().includes(q) ||
+        (x.generated_title && x.generated_title.toLowerCase().includes(q)) ||
         x.title.toLowerCase().includes(q) ||
+        (x.custom_title && x.custom_title.toLowerCase().includes(q)) ||
         x.query_text.toLowerCase().includes(q) ||
         (x.answer_text && x.answer_text.toLowerCase().includes(q))
     );
   }, [queries, filter]);
+
+  const openRename = (item: SavedQueryDto) => {
+    setRenameTarget(item);
+    setRenameTitle(visualTitle(item));
+  };
+
+  const submitRename = async () => {
+    if (!renameTarget) return;
+    const nextTitle = renameTitle.trim();
+    if (!nextTitle) {
+      toast.error('Title is required');
+      return;
+    }
+    if (nextTitle.length > 255) {
+      toast.error('Title must be 255 characters or fewer');
+      return;
+    }
+
+    const id = renameTarget.id;
+    const previous = queries;
+    setRenaming(true);
+    setQueries((current) =>
+      current.map((item) => (item.id === id ? { ...item, custom_title: nextTitle } : item))
+    );
+    try {
+      const updated = await updateSavedVisualizationTitle(id, nextTitle);
+      setQueries((current) => current.map((item) => (item.id === id ? updated : item)));
+      setRenameTarget(null);
+      setRenameTitle('');
+      toast.success(t('common.save'));
+    } catch (e) {
+      setQueries(previous);
+      toast.error(e instanceof Error ? e.message : t('common.error'));
+    } finally {
+      setRenaming(false);
+    }
+  };
 
   const openInChat = (item: SavedQueryDto) => {
     const src = savedSource(item);
@@ -154,9 +213,22 @@ export function SavedVisuals() {
                   <Card className="p-3 transition-all border-border group overflow-hidden bg-card/80">
                     <div className="flex items-start justify-between gap-2 mb-2">
                       <div className="flex-1 min-w-0">
-                        <h3 className="text-sm font-semibold mb-1 group-hover:text-primary transition-colors truncate">
-                          {query.title}
-                        </h3>
+                        <div className="mb-1 flex min-w-0 items-center gap-1.5">
+                          <h3 className="truncate text-sm font-semibold transition-colors group-hover:text-primary">
+                            {visualTitle(query)}
+                          </h3>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 shrink-0 rounded-md text-white/45 hover:bg-violet-500/10 hover:text-violet-300"
+                            onClick={() => openRename(query)}
+                            title="Rename"
+                            aria-label="Rename visualization"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                         <Badge variant="outline" className="h-5 bg-violet-500/10 px-2 text-[11px] text-violet-300 border-violet-500/20">
                           <BarChart3 className="h-3 w-3 mr-1" />
                           {t('visuals.badge')}
@@ -204,6 +276,38 @@ export function SavedVisuals() {
           <p className="text-muted-foreground text-sm mt-8">{t('visuals.empty')}</p>
         )}
       </div>
+
+      <Dialog open={renameTarget != null} onOpenChange={(open) => !open && setRenameTarget(null)}>
+        <DialogContent className="border-white/10 bg-[#141420] text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename visualization</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Input
+              value={renameTitle}
+              onChange={(e) => setRenameTitle(e.target.value.slice(0, 255))}
+              className="bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
+              placeholder="Visualization title"
+              maxLength={255}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void submitRename();
+                }
+              }}
+            />
+            <p className="text-xs text-white/45">{renameTitle.trim().length}/255</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameTarget(null)} disabled={renaming}>
+              {t('common.cancel')}
+            </Button>
+            <Button onClick={() => void submitRename()} disabled={renaming || !renameTitle.trim()}>
+              {renaming ? '...' : t('common.save')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

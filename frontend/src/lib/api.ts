@@ -121,6 +121,8 @@ export type DatasetSuggestion = {
 export type SavedQueryDto = {
   id: number;
   title: string;
+  generated_title?: string | null;
+  custom_title?: string | null;
   query_text: string;
   sql_text: string | null;
   answer_text: string | null;
@@ -261,6 +263,13 @@ export async function deleteDataset(datasetId: number) {
   return apiJson<{ ok: boolean }>(`/api/v1/datasets/${datasetId}`, { method: 'DELETE' });
 }
 
+export async function renameDataset(datasetId: number, name: string) {
+  return apiJson<Partial<DatasetListItem> & { id: number; name: string }>(`/api/v1/datasets/${datasetId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  });
+}
+
 export async function getDatasetChatContext(datasetId: number) {
   return apiJson<DatasetChatContext>(`/api/v1/datasets/${datasetId}/chat-context`);
 }
@@ -357,4 +366,11 @@ export async function createSavedQuery(body: {
 
 export async function deleteSavedQuery(id: number) {
   return apiJson<{ ok: string }>(`/api/v1/saved-queries/${id}`, { method: 'DELETE' });
+}
+
+export async function updateSavedVisualizationTitle(id: number, customTitle: string | null) {
+  return apiJson<SavedQueryDto>(`/api/v1/saved-queries/${id}/visualization-title`, {
+    method: 'PATCH',
+    body: JSON.stringify({ custom_title: customTitle }),
+  });
 }

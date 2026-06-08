@@ -60,3 +60,14 @@ backend/data/**
 # Keep placeholders only
 !backend/data/bigdata/raw/.gitkeep
 !backend/data/bigdata/processed/.gitkeepgit rm -r --cached backend/data
+
+# macOS
+.DS_Store
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/vite.log
+frontend/vite.err.log
+
+backend/app/models/*.zip

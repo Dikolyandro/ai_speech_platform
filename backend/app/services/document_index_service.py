@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,20 +59,37 @@ async def index_document_text(
         )
     ).scalars().all()
 
-    embedder = Embedder()
-    arr = embedder.encode([c.text for c in rows])
-    dim = int(arr.shape[1])
+    embeddings_indexed = 0
+    embeddings_enabled = os.getenv("DOCUMENT_EMBEDDINGS_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+    if not embeddings_enabled:
+        return {
+            "document_id": doc.id,
+            "chunks_indexed": len(rows),
+            "embeddings_indexed": 0,
+        }
 
-    embeds = [
-        ChunkEmbedding(
-            chunk_id=ch.id,
-            model_version="bge-m3",
-            dim=dim,
-            vector=vec.astype("float32").tobytes(),
-        )
-        for ch, vec in zip(rows, arr)
-    ]
-    db.add_all(embeds)
-    await db.commit()
+    try:
+        embedder = Embedder()
+        arr = embedder.encode([c.text for c in rows])
+        dim = int(arr.shape[1])
 
-    return {"document_id": doc.id, "chunks_indexed": len(rows)}
+        embeds = [
+            ChunkEmbedding(
+                chunk_id=ch.id,
+                model_version="bge-m3",
+                dim=dim,
+                vector=vec.astype("float32").tobytes(),
+            )
+            for ch, vec in zip(rows, arr)
+        ]
+        db.add_all(embeds)
+        await db.commit()
+        embeddings_indexed = len(embeds)
+    except Exception:
+        await db.rollback()
+
+    return {
+        "document_id": doc.id,
+        "chunks_indexed": len(rows),
+        "embeddings_indexed": embeddings_indexed,
+    }

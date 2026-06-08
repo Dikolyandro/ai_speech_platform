@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,10 @@ from app.services.security_service import (
 
 
 router = APIRouter(prefix="/bigdata", tags=["Big Data"])
+
+
+class RenameBigDataDatasetReq(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
 
 BACKEND_DIR = Path(__file__).resolve().parents[3]
 BIGDATA_DIR = BACKEND_DIR / "data" / "bigdata"
@@ -465,6 +470,24 @@ async def get_bigdata_dataset(
     db: AsyncSession = Depends(get_db),
 ) -> BigDataDataset:
     return await _get_owned_bigdata_dataset(db, dataset_id, user.id)
+
+
+@router.patch("/datasets/{dataset_id}", response_model=BigDataDatasetOut)
+async def rename_bigdata_dataset(
+    dataset_id: int,
+    body: RenameBigDataDatasetReq,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BigDataDataset:
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="dataset name is required")
+    ds = await _get_owned_bigdata_dataset(db, dataset_id, user.id)
+    ds.name = name[:255]
+    await db.commit()
+    await db.refresh(ds)
+    audit_log("bigdata.rename", user_id=user.id, dataset_id=dataset_id)
+    return ds
 
 
 @router.post("/datasets/{dataset_id}/profile", response_model=BigDataDatasetOut)

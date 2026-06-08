@@ -28,6 +28,7 @@ from sqlalchemy import select
 from app.services.i18n_service import normalize_preferred_language, validate_query_language
 from app.services.analytics_semantic_layer import AnalyticsSemanticResult, analyze_query_semantics
 from app.services.dataset_overview_service import unwrap_dataset_columns_json
+from app.services.search_service import SearchService
 
 router = APIRouter(prefix="/query", tags=["Query Answer"])
 
@@ -1270,6 +1271,60 @@ def _pick_status_filter(col_set: set[str], q_lex: str, params: dict[str, Any]) -
     return ("", None)
 
 
+def _looks_like_document_question(query: str) -> bool:
+    q = (query or "").lower()
+    return bool(
+        re.search(
+            r"\b(document|doc|rag|uploaded text|text file|secret|phrase|business goal|context)\b",
+            q,
+            re.IGNORECASE,
+        )
+        or re.search(r"\b(документ|документа|текст|файл|секрет|фраз|цель|контекст)\b", q, re.IGNORECASE)
+    )
+
+
+async def _answer_from_uploaded_documents(
+    db: AsyncSession,
+    dataset_id: int,
+    query: str,
+    *,
+    explain: bool,
+) -> Optional[dict[str, Any]]:
+    if not _looks_like_document_question(query):
+        return None
+
+    hits = await SearchService(db).search(dataset_id=dataset_id, query=query, top_k=3)
+    if not hits:
+        return None
+
+    snippets = [str(hit.get("text") or "").strip() for hit in hits if str(hit.get("text") or "").strip()]
+    if not snippets:
+        return None
+
+    answer_text = "\n\n".join(snippets)
+    out: dict[str, Any] = {
+        "dataset_id": dataset_id,
+        "interpreted": {
+            "operation": "document_search",
+            "source": "uploaded_documents",
+            "hits": [
+                {
+                    "chunk_id": hit.get("chunk_id"),
+                    "document_id": hit.get("document_id"),
+                    "score": hit.get("score"),
+                }
+                for hit in hits
+            ],
+            "chart": {"enabled": False, "chart_type": None, "title": None},
+        },
+        "rows": [],
+        "answer_text": answer_text,
+    }
+    if explain:
+        out["sql"] = None
+    return out
+
+
 # ---------- Main endpoint ----------
 @router.post("/answer")
 async def answer_query(
@@ -1335,6 +1390,20 @@ async def answer_query(
                 "Аккаунт тілі: Қазақша. Сұрауды қазақша енгізіңіз немесе мәзірден тілді ауыстырыңыз.",
             )
         raise HTTPException(status_code=400, detail=detail)
+
+    document_answer = await _answer_from_uploaded_documents(
+        db,
+        req.dataset_id,
+        qtext,
+        explain=bool(req.options.explain),
+    )
+    if document_answer is not None:
+        if transcribed_raw is not None:
+            document_answer["voice"] = {
+                "job_id": req.input.job_id,
+                "transcribed_text": transcribed_raw,
+            }
+        return document_answer
 
     # 3) table + schema (раньше intent — нужны колонки для семантики; intent ниже по q_lex)
     table_name = f"ds_{req.dataset_id}_data"
