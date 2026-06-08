@@ -36,9 +36,16 @@ app.include_router(datasets_router, prefix="/api/v1")
 @app.on_event("startup")
 async def startup():
     async with engine.begin() as conn:
-        # lightweight migrations for MySQL dev setups (no Alembic yet)
         dialect = (getattr(engine.dialect, "name", None) or "").lower()
+
+        try:
+            await conn.run_sync(Base.metadata.create_all)
+        except OperationalError as exc:
+            if "already exists" not in str(exc):
+                raise
+
         if dialect == "mysql":
+            # дальше весь твой существующий mysql-блок без изменений
             # add/backfill users.nickname if missing (safe for existing rows)
             col = (
                 await conn.execute(
@@ -220,12 +227,6 @@ async def startup():
                     ).scalar()
                     if col_exists == 0:
                         await conn.execute(text(ddl))
-        try:
-            await conn.run_sync(Base.metadata.create_all)
-        except OperationalError as exc:
-            # Local SQLite may hit duplicate CREATE TABLE during startup.
-            if "already exists" not in str(exc):
-                raise
 
 
 @app.get("/")
