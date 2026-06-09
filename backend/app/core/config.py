@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str | None = None
     SMTP_FROM_NAME: str = "AI Analytics Assistant"
     SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
 
     # Папка с весами intent (tokenizer + config + model.safetensors). По умолчанию — app/models/intent1.0
     INTENT_MODEL_DIR: str | None = None
