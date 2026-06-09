@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     ASR_TIMEOUT_SECONDS: int = 60
     ASR_MAX_AUDIO_BYTES: int = 10 * 1024 * 1024
     LOCAL_AUDIO_DIR: str
+    RESEND_API_KEY: str | None = None
 
     # Auth (JWT)
     JWT_SECRET_KEY: str
