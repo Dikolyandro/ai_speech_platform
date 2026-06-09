@@ -14,14 +14,20 @@ class EmailService:
 
     def send_verification_code(self, *, to_email: str, code: str) -> bool:
         if not self._is_configured():
-            logger.warning("Email verification code for %s: %s", to_email, code)
+            logger.warning(
+                "Email verification code for %s: %s",
+                to_email,
+                code,
+            )
             return False
 
         try:
+            api_key = (settings.RESEND_API_KEY or "").strip()
+
             response = requests.post(
                 "https://api.resend.com/emails",
                 headers={
-                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
@@ -36,11 +42,21 @@ class EmailService:
                 },
                 timeout=10,
             )
+
             response.raise_for_status()
+
+            logger.info(
+                "Successfully sent email verification code to %s",
+                to_email,
+            )
+
             return True
 
         except Exception:
-            logger.exception("Failed to send email verification code to %s", to_email)
+            logger.exception(
+                "Failed to send email verification code to %s",
+                to_email,
+            )
             return False
 
 
