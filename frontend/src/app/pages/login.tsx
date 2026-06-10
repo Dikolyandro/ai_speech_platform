@@ -11,7 +11,7 @@ export function LoginPage() {
   const nav = useNavigate();
   const [sp] = useSearchParams();
   const { setToken, recentAccounts, rememberAccount } = useAuth();
-  const { lang, t } = useI18n();
+  const { lang, setLang, t } = useI18n();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [nickname, setNickname] = useState('');
   const [email, setEmail] = useState('');
@@ -23,9 +23,16 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   const title = useMemo(
-    () => (awaitingVerification ? 'Verify your email' : mode === 'login' ? t('auth.login') : t('auth.register')),
+    () => (awaitingVerification ? t('auth.verifyEmail') : mode === 'login' ? t('auth.login') : t('auth.register')),
     [awaitingVerification, mode, t]
   );
+
+  const changePreferredLanguage = (next: 'ru' | 'en' | 'kk') => {
+    setPreferredLanguage(next);
+    void setLang(next).catch(() => {
+      toast.error(t('common.error'));
+    });
+  };
 
   const switchMode = (nextMode: 'login' | 'register') => {
     setMode(nextMode);
@@ -50,9 +57,9 @@ export function LoginPage() {
         const e = email.trim().toLowerCase();
         const code = verificationCode.trim();
         if (!e) throw new Error(t('auth.email'));
-        if (!/^\d{6}$/.test(code)) throw new Error('Enter the 6-digit verification code.');
+        if (!/^\d{6}$/.test(code)) throw new Error(t('auth.codeInvalid'));
         await authVerifyEmail(e, code);
-        toast.success('Email verified. You can sign in now.');
+        toast.success(t('auth.emailVerified'));
         setAwaitingVerification(false);
         setVerificationCode('');
         setMode('login');
@@ -69,7 +76,7 @@ export function LoginPage() {
         setEmail(e);
         setAwaitingVerification(true);
         setVerificationCode('');
-        toast.success('Verification code sent. Check your email.');
+        toast.success(t('auth.verificationSent'));
         return;
       }
       const r = await authLogin(n, password);
@@ -90,7 +97,7 @@ export function LoginPage() {
       const e = email.trim().toLowerCase();
       if (!e) throw new Error(t('auth.email'));
       await authResendVerificationCode(e);
-      toast.success('If this email needs verification, a new code has been sent.');
+      toast.success(t('auth.resendSent'));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
@@ -140,7 +147,7 @@ export function LoginPage() {
                 inputMode="numeric"
                 pattern="[0-9]*"
                 maxLength={6}
-                placeholder="6-digit code"
+                placeholder={t('auth.codePlaceholder')}
                 value={verificationCode}
                 onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 autoComplete="one-time-code"
@@ -154,7 +161,7 @@ export function LoginPage() {
                 onClick={resendCode}
                 disabled={busy || resendBusy}
               >
-                {resendBusy ? '...' : 'Resend code'}
+                {resendBusy ? '...' : t('auth.resendCode')}
               </Button>
             </>
           ) : (
@@ -180,7 +187,7 @@ export function LoginPage() {
                     <select
                       className="w-full rounded-md border border-border bg-card text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                       value={preferredLanguage}
-                      onChange={(e) => setPreferredLanguage(e.target.value as 'ru' | 'en' | 'kk')}
+                      onChange={(e) => changePreferredLanguage(e.target.value as 'ru' | 'en' | 'kk')}
                     >
                       <option value="ru">{t('auth.lang.ru')}</option>
                       <option value="en">{t('auth.lang.en')}</option>
@@ -204,7 +211,7 @@ export function LoginPage() {
         </div>
 
         <div className="mt-4 text-sm text-muted-foreground">
-          {awaitingVerification ? 'Already verified?' : mode === 'login' ? t('auth.noAccount') : t('auth.haveAccount')}{' '}
+          {awaitingVerification ? t('auth.alreadyVerified') : mode === 'login' ? t('auth.noAccount') : t('auth.haveAccount')}{' '}
           <button
             className="text-primary hover:underline"
             type="button"

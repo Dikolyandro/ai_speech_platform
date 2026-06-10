@@ -55,27 +55,17 @@ import {
   type BigDataProfileColumn,
 } from '../../lib/bigdata-api';
 import { useDataset } from '../dataset-context';
+import { useI18n } from '../i18n/context';
 
 const SUPPORTED_BIGDATA_EXTENSIONS = ['.csv', '.csv.gz', '.json', '.jsonl', '.json.gz', '.parquet'];
 const SUPPORTED_BIGDATA_ACCEPT = '.csv,.csv.gz,.json,.jsonl,.json.gz,.parquet,application/json,text/csv,application/octet-stream';
 const SUPPORTED_BIGDATA_TEXT = 'Big Data formats: CSV, CSV.GZ, JSON, JSONL, JSON.GZ, PARQUET.';
-const HELP_TEXT = {
-  columns: 'Number of detected data fields.',
-  datasetFormat: 'The file type used to read and process this dataset.',
-  nullCounts: 'Shows missing or empty values in the dataset.',
-  process: 'Analyze dataset structure and statistics.',
-  rows: 'Total number of records in the dataset.',
-  schema: 'Automatically detected structure and data types.',
-  sparkProfile: 'Automatic analysis of large datasets using Apache Spark.',
-  topValues: 'Most common values detected in the dataset.',
-  chatSample: 'Create a small SQL sample so the chat can answer questions about this data.',
-};
 
-function statusLabel(status: BigDataDatasetStatus) {
-  if (status === 'uploaded') return 'Uploaded';
-  if (status === 'processing') return 'Processing';
-  if (status === 'processed') return 'Processed';
-  if (status === 'failed') return 'Failed';
+function statusLabel(status: BigDataDatasetStatus, t: (key: string) => string) {
+  if (status === 'uploaded') return t('bigdata.status.uploaded');
+  if (status === 'processing') return t('bigdata.status.processing');
+  if (status === 'processed') return t('bigdata.status.processed');
+  if (status === 'failed') return t('bigdata.status.failed');
   return status;
 }
 
@@ -113,10 +103,10 @@ function renderValue(value: unknown) {
   return String(value);
 }
 
-function numericText(column: BigDataProfileColumn) {
+function numericText(column: BigDataProfileColumn, t: (key: string) => string) {
   if (!column.numeric) return null;
   const { min, max, avg } = column.numeric;
-  return `min ${renderValue(min)} / max ${renderValue(max)} / avg ${renderValue(avg)}`;
+  return `${t('bigdata.min')} ${renderValue(min)} / ${t('bigdata.max')} ${renderValue(max)} / ${t('bigdata.avg')} ${renderValue(avg)}`;
 }
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -156,14 +146,14 @@ function readableColumnLabel(name: string) {
   );
 }
 
-function readableDataType(type: string) {
+function readableDataType(type: string, t: (key: string) => string) {
   const lower = type.toLowerCase();
-  if (lower.includes('int') || lower.includes('long')) return 'Whole number';
-  if (lower.includes('double') || lower.includes('float') || lower.includes('decimal')) return 'Decimal number';
-  if (lower.includes('timestamp') || lower.includes('date')) return 'Date/time';
-  if (lower.includes('bool')) return 'Yes/no';
-  if (lower.includes('array')) return 'List';
-  if (lower.includes('string')) return 'Text';
+  if (lower.includes('int') || lower.includes('long')) return t('bigdata.type.whole');
+  if (lower.includes('double') || lower.includes('float') || lower.includes('decimal')) return t('bigdata.type.decimal');
+  if (lower.includes('timestamp') || lower.includes('date')) return t('bigdata.type.datetime');
+  if (lower.includes('bool')) return t('bigdata.type.boolean');
+  if (lower.includes('array')) return t('bigdata.type.list');
+  if (lower.includes('string')) return t('bigdata.type.text');
   return readableColumnLabel(type);
 }
 
@@ -179,7 +169,7 @@ function hasColumnPart(columns: Set<string>, parts: string[]) {
   return [...columns].some((name) => parts.some((part) => name.includes(part)));
 }
 
-function datasetSummary(columns: { name: string }[]) {
+function datasetSummary(columns: { name: string }[], t: (key: string) => string) {
   const names = normalizedColumnSet(columns);
   const hasReviewData =
     hasColumn(names, ['overall', 'verified', 'reviewText', 'summary', 'asin', 'vote']) ||
@@ -189,12 +179,12 @@ function datasetSummary(columns: { name: string }[]) {
     hasColumnPart(names, ['pickup', 'dropoff', 'fare', 'taxi', 'passenger']);
 
   if (hasTaxiData) {
-    return 'This dataset contains information about taxi trips, passengers, payments, fares, and travel times.';
+    return t('bigdata.summary.taxi');
   }
   if (hasReviewData) {
-    return 'This dataset contains customer reviews, ratings, review texts, product identifiers, and purchase information.';
+    return t('bigdata.summary.review');
   }
-  return 'This dataset contains structured analytical data.';
+  return t('bigdata.summary.generic');
 }
 
 type DatasetCapability = {
@@ -203,7 +193,7 @@ type DatasetCapability = {
   Icon: LucideIcon;
 };
 
-function datasetCapabilities(columns: { name: string; type?: string }[]) {
+function datasetCapabilities(columns: { name: string; type?: string }[], t: (key: string) => string) {
   const names = normalizedColumnSet(columns);
   const capabilities: DatasetCapability[] = [];
   const add = (condition: boolean, capability: DatasetCapability) => {
@@ -213,62 +203,62 @@ function datasetCapabilities(columns: { name: string; type?: string }[]) {
   };
 
   add(hasColumn(names, ['overall', 'rating']) || hasColumnPart(names, ['rating', 'score']), {
-    title: 'Rating analytics',
-    description: 'Compare ratings and distributions.',
+    title: t('bigdata.cap.rating'),
+    description: t('bigdata.cap.ratingDesc'),
     Icon: Star,
   });
   add(hasColumn(names, ['reviewText', 'summary']) || hasColumnPart(names, ['review', 'comment', 'text']), {
-    title: 'Review analytics',
-    description: 'Explore review text and summaries.',
+    title: t('bigdata.cap.review'),
+    description: t('bigdata.cap.reviewDesc'),
     Icon: FileText,
   });
   add(hasColumn(names, ['asin', 'product_id', 'product']) || hasColumnPart(names, ['product', 'item', 'asin']), {
-    title: 'Product analytics',
-    description: 'Group results by products or items.',
+    title: t('bigdata.cap.product'),
+    description: t('bigdata.cap.productDesc'),
     Icon: ShoppingCart,
   });
   add(hasColumn(names, ['verified']) || hasColumnPart(names, ['purchase', 'verified']), {
-    title: 'Purchase analytics',
-    description: 'Compare verified and non-verified activity.',
+    title: t('bigdata.cap.purchase'),
+    description: t('bigdata.cap.purchaseDesc'),
     Icon: CheckCircle2,
   });
   add(hasColumn(names, ['trip_distance']) || hasColumnPart(names, ['trip', 'pickup', 'dropoff']), {
-    title: 'Trip analytics',
-    description: 'Analyze routes, distances, and trips.',
+    title: t('bigdata.cap.trip'),
+    description: t('bigdata.cap.tripDesc'),
     Icon: Car,
   });
   add(hasColumn(names, ['payment_type', 'fare_amount', 'tip_amount', 'total_amount']) || hasColumnPart(names, ['payment', 'fare', 'tip', 'amount']), {
-    title: 'Payment analytics',
-    description: 'Review fares, tips, and payment patterns.',
+    title: t('bigdata.cap.payment'),
+    description: t('bigdata.cap.paymentDesc'),
     Icon: CreditCard,
   });
   add(hasColumn(names, ['passenger_count']) || hasColumnPart(names, ['passenger', 'customer', 'user']), {
-    title: 'Passenger statistics',
-    description: 'Summarize people or customer counts.',
+    title: t('bigdata.cap.passenger'),
+    description: t('bigdata.cap.passengerDesc'),
     Icon: Users,
   });
   add(hasColumnPart(names, ['date', 'time', 'timestamp', 'year', 'month']), {
-    title: 'Time trends',
-    description: 'Track changes over days, months, or years.',
+    title: t('bigdata.cap.time'),
+    description: t('bigdata.cap.timeDesc'),
     Icon: TrendingUp,
   });
 
   const hasNumericType = columns.some((column) => /(int|long|double|float|decimal|number)/i.test(column.type ?? ''));
   add(hasNumericType, {
-    title: 'Number summaries',
-    description: 'Calculate totals, averages, and ranges.',
+    title: t('bigdata.cap.number'),
+    description: t('bigdata.cap.numberDesc'),
     Icon: Hash,
   });
   add(columns.some((column) => /(date|timestamp)/i.test(column.type ?? '')), {
-    title: 'Date analysis',
-    description: 'Use date fields for trend reports.',
+    title: t('bigdata.cap.date'),
+    description: t('bigdata.cap.dateDesc'),
     Icon: CalendarDays,
   });
 
   if (capabilities.length === 0 && columns.length > 0) {
     capabilities.push({
-      title: 'Field breakdowns',
-      description: 'Count and compare values by field.',
+      title: t('bigdata.cap.field'),
+      description: t('bigdata.cap.fieldDesc'),
       Icon: BarChart3,
     });
   }
@@ -306,7 +296,19 @@ function HelpLabel({ children, tip }: { children: ReactNode; tip: string }) {
 }
 
 export function BigDataDatasets() {
+  const { t } = useI18n();
   const navigate = useNavigate();
+  const HELP_TEXT = {
+    columns: t('bigdata.detectedFields'),
+    datasetFormat: t('bigdata.fileTypeHelp'),
+    nullCounts: t('bigdata.nullHelp'),
+    process: t('bigdata.processHelp'),
+    rows: t('bigdata.rowsHelp'),
+    schema: t('bigdata.schemaHelp'),
+    sparkProfile: t('bigdata.sparkHelp'),
+    topValues: t('bigdata.topValuesHelp'),
+    chatSample: t('bigdata.chatSampleHelp'),
+  };
   const { setDatasetId, refreshDatasets } = useDataset();
   const [items, setItems] = useState<BigDataDatasetSummary[]>([]);
   const [selected, setSelected] = useState<BigDataDataset | null>(null);
@@ -341,7 +343,7 @@ export function BigDataDatasets() {
         setSelected(null);
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not load Big Data datasets');
+      toast.error(error instanceof Error ? error.message : t('bigdata.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -363,7 +365,7 @@ export function BigDataDatasets() {
       const dataset = await getBigDataDataset(datasetId);
       setSelected(dataset);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not open dataset');
+      toast.error(error instanceof Error ? error.message : t('bigdata.openFailed'));
     } finally {
       setBusyId(null);
     }
@@ -380,13 +382,13 @@ export function BigDataDatasets() {
     setUploading(true);
     try {
       const dataset = await uploadBigDataCsv(file, uploadName || file.name);
-      toast.success(`Uploaded #${dataset.id}`);
+      toast.success(t('bigdata.uploaded', { id: dataset.id }));
       setUploadOpen(false);
       setUploadName('');
       setSelected(dataset);
       await load();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Upload failed');
+      toast.error(error instanceof Error ? error.message : t('bigdata.uploadFailed'));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -395,7 +397,7 @@ export function BigDataDatasets() {
 
   const onRegisterLocalFile = async () => {
     if (!localPath.trim()) {
-      toast.error('Enter a local file path');
+      toast.error(t('bigdata.enterLocalPath'));
       return;
     }
     const lowerPath = localPath.trim().toLowerCase();
@@ -407,14 +409,14 @@ export function BigDataDatasets() {
     setUploading(true);
     try {
       const dataset = await registerLocalBigDataFile(localPath.trim(), uploadName || undefined);
-      toast.success(`Registered #${dataset.id}`);
+      toast.success(t('bigdata.registered', { id: dataset.id }));
       setUploadOpen(false);
       setUploadName('');
       setLocalPath('');
       setSelected(dataset);
       await load();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Local file registration failed');
+      toast.error(error instanceof Error ? error.message : t('bigdata.registerFailed'));
     } finally {
       setUploading(false);
     }
@@ -426,25 +428,25 @@ export function BigDataDatasets() {
       const dataset = await profileBigDataDataset(datasetId);
       setSelected(dataset);
       await load();
-      toast.success('Spark profile created');
+      toast.success(t('bigdata.profileCreated'));
     } catch (error) {
       await load();
-      toast.error(error instanceof Error ? error.message : 'Spark processing failed');
+      toast.error(error instanceof Error ? error.message : t('bigdata.processingFailed'));
     } finally {
       setBusyId(null);
     }
   };
 
   const onDelete = async (datasetId: number) => {
-    if (!confirm(`Delete Big Data dataset #${datasetId}?`)) return;
+    if (!confirm(t('bigdata.deleteConfirm', { id: datasetId }))) return;
     setBusyId(datasetId);
     try {
       await deleteBigDataDataset(datasetId);
       if (selected?.id === datasetId) setSelected(null);
       await load();
-      toast.success('Deleted');
+      toast.success(t('bigdata.deleted'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Delete failed');
+      toast.error(error instanceof Error ? error.message : t('bigdata.deleteFailed'));
     } finally {
       setBusyId(null);
     }
@@ -459,11 +461,11 @@ export function BigDataDatasets() {
     if (!renameTarget) return;
     const nextName = renameName.trim();
     if (!nextName) {
-      toast.error('Name is required');
+      toast.error(t('common.requiredName'));
       return;
     }
     if (nextName.length > 255) {
-      toast.error('Name must be 255 characters or fewer');
+      toast.error(t('common.max255'));
       return;
     }
 
@@ -479,11 +481,11 @@ export function BigDataDatasets() {
       setSelected((current) => (current?.id === id ? updated : current));
       setSampleSource((current) => (current?.id === id ? updated : current));
       setRenameTarget(null);
-      toast.success('Dataset renamed');
+      toast.success(t('datasets.renamed'));
     } catch (error) {
       setItems(previousItems);
       setSelected(previousSelected);
-      toast.error(error instanceof Error ? error.message : 'Rename failed');
+      toast.error(error instanceof Error ? error.message : t('bigdata.renameFailed'));
     } finally {
       setRenaming(false);
     }
@@ -495,16 +497,16 @@ export function BigDataDatasets() {
       const dataset = await getBigDataDataset(datasetId);
       setSelected(dataset);
       if (dataset.status !== 'processed') {
-        toast.error('Process this Big Data dataset before creating a chat sample');
+        toast.error(t('bigdata.needProcessed'));
         return;
       }
       const names = (dataset.schema_json?.columns ?? []).map((column) => column.name);
       if (names.length === 0) {
-        toast.error('No schema columns found. Run Spark processing first.');
+        toast.error(t('bigdata.noSchema'));
         return;
       }
       setSampleSource(dataset);
-      setSampleName(`${dataset.name} chat sample`);
+      setSampleName(t('bigdata.sampleDefaultName', { name: dataset.name }));
       setSampleRowPreset('5000');
       setSampleCustomRows('5000');
       setSampleMode('first');
@@ -513,7 +515,7 @@ export function BigDataDatasets() {
       setCreatedSample(null);
       setSampleOpen(true);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not open chat sample settings');
+      toast.error(error instanceof Error ? error.message : t('bigdata.sampleSettingsFailed'));
     } finally {
       setBusyId(null);
     }
@@ -555,11 +557,11 @@ export function BigDataDatasets() {
     if (!sampleSource) return;
     const name = sampleName.trim();
     if (!name) {
-      toast.error('Enter a sample dataset name');
+      toast.error(t('bigdata.enterSampleName'));
       return;
     }
     if (sampleColumns.length === 0) {
-      toast.error('Select at least one column');
+      toast.error(t('bigdata.selectOneColumn'));
       return;
     }
     const filters = sampleFilters
@@ -578,9 +580,9 @@ export function BigDataDatasets() {
       await refreshDatasets();
       setDatasetId(result.dataset_id);
       setCreatedSample({ dataset_id: result.dataset_id, name: result.name });
-      toast.success(`Chat sample ready: ${result.rows_sampled} rows`);
+      toast.success(t('common.done'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not create chat sample');
+      toast.error(error instanceof Error ? error.message : t('bigdata.sampleCreateFailed'));
     } finally {
       setCreatingSample(false);
     }
@@ -595,8 +597,8 @@ export function BigDataDatasets() {
 
   const columns = selected?.profile_json?.columns ?? [];
   const schemaColumns = selected?.schema_json?.columns ?? [];
-  const overviewSummary = datasetSummary(schemaColumns);
-  const capabilities = datasetCapabilities(schemaColumns);
+  const overviewSummary = datasetSummary(schemaColumns, t);
+  const capabilities = datasetCapabilities(schemaColumns, t);
 
   return (
     <div className="h-full p-8 overflow-y-auto">
@@ -611,7 +613,7 @@ export function BigDataDatasets() {
             Big Data
           </h1>
           <p className="text-muted-foreground">
-            Upload large CSV, compressed CSV, JSON Lines, compressed JSON, or Parquet files and inspect Spark profiles.
+            {t('bigdata.subtitle')}
           </p>
         </motion.div>
 
@@ -624,7 +626,7 @@ export function BigDataDatasets() {
           <div className="relative flex-1 max-w-md min-w-[220px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search Big Data datasets"
+              placeholder={t('bigdata.search')}
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
               className="pl-10 bg-accent/50 border-border !text-white !caret-white placeholder:!text-white/45"
@@ -633,7 +635,7 @@ export function BigDataDatasets() {
           <div className="flex items-center gap-2">
             <Button type="button" variant="outline" onClick={() => void load()}>
               <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh
+              {t('common.refresh')}
             </Button>
             <Button
               type="button"
@@ -641,7 +643,7 @@ export function BigDataDatasets() {
               onClick={() => setUploadOpen(true)}
             >
               <Upload className="h-4 w-4 mr-2" />
-              Upload file
+              {t('bigdata.uploadFile')}
             </Button>
           </div>
         </motion.div>
@@ -649,10 +651,10 @@ export function BigDataDatasets() {
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-5">
           <div>
             {loading ? (
-              <p className="text-muted-foreground">Loading...</p>
+              <p className="text-muted-foreground">{t('common.loading')}</p>
             ) : filtered.length === 0 ? (
               <Card className="p-6 border-border text-muted-foreground">
-                No Big Data datasets yet.
+                {t('bigdata.empty')}
               </Card>
             ) : (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -676,7 +678,7 @@ export function BigDataDatasets() {
                               size="icon"
                               variant="ghost"
                               className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-primary/10 hover:text-primary"
-                              title="Rename dataset"
+                              title={t('bigdata.rename')}
                               onClick={() => openRename(dataset)}
                             >
                               <Pencil className="h-3.5 w-3.5" />
@@ -684,7 +686,7 @@ export function BigDataDatasets() {
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge variant="outline" className={statusClass(dataset.status)}>
-                              {statusLabel(dataset.status)}
+                              {statusLabel(dataset.status, t)}
                             </Badge>
                             <Badge variant="outline" className="!text-white/70">#{dataset.id}</Badge>
                           </div>
@@ -694,13 +696,13 @@ export function BigDataDatasets() {
                       <div className="grid grid-cols-2 gap-3 text-sm mb-4">
                         <div className="rounded-lg bg-accent/35 p-3">
                           <p className="text-xs text-muted-foreground">
-                            <HelpLabel tip={HELP_TEXT.rows}>Rows</HelpLabel>
+                            <HelpLabel tip={HELP_TEXT.rows}>{t('bigdata.rows')}</HelpLabel>
                           </p>
                           <p className="font-medium">{dataset.row_count ?? '-'}</p>
                         </div>
                         <div className="rounded-lg bg-accent/35 p-3">
                           <p className="text-xs text-muted-foreground">
-                            <HelpLabel tip={HELP_TEXT.columns}>Columns</HelpLabel>
+                            <HelpLabel tip={HELP_TEXT.columns}>{t('bigdata.columns')}</HelpLabel>
                           </p>
                           <p className="font-medium">{dataset.column_count ?? '-'}</p>
                         </div>
@@ -708,7 +710,7 @@ export function BigDataDatasets() {
 
                       <p className="text-xs text-muted-foreground mb-4 flex-1">
                         {dataset.status === 'failed'
-                          ? 'Processing failed. Open details to see the reason or create a chat sample.'
+                          ? t('bigdata.processingFailedDetails')
                           : formatDate(dataset.created_at)}
                       </p>
 
@@ -720,7 +722,7 @@ export function BigDataDatasets() {
                           onClick={() => void openDetails(dataset.id)}
                           disabled={busyId === dataset.id}
                         >
-                          Details
+                          {t('common.details')}
                         </Button>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -731,7 +733,7 @@ export function BigDataDatasets() {
                               onClick={() => void openChatSampleModal(dataset.id)}
                               disabled={busyId === dataset.id}
                             >
-                              Chat sample
+                              {t('bigdata.chatSample')}
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent side="top" sideOffset={6} className="max-w-[230px]">
@@ -751,7 +753,7 @@ export function BigDataDatasets() {
                               ) : (
                                 <Play className="h-4 w-4 mr-2" />
                               )}
-                              Process
+                              {t('common.process')}
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent side="top" sideOffset={6} className="max-w-[220px]">
@@ -759,8 +761,8 @@ export function BigDataDatasets() {
                           </TooltipContent>
                         </Tooltip>
                         <div className="basis-full grid gap-1 text-[11px] leading-4 text-muted-foreground">
-                          <span>Process: Analyze dataset structure and statistics.</span>
-                          <span>Chat sample: Create a smaller SQL dataset for natural-language chat.</span>
+                          <span>{t('bigdata.processInlineHelp')}</span>
+                          <span>{t('bigdata.chatSampleHelp')}</span>
                         </div>
                         <Button
                           type="button"
@@ -769,7 +771,7 @@ export function BigDataDatasets() {
                           className="h-9 w-9 hover:bg-destructive/10 hover:text-destructive"
                           onClick={() => void onDelete(dataset.id)}
                           disabled={busyId === dataset.id}
-                          title="Delete"
+                          title={t('common.delete')}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -787,7 +789,7 @@ export function BigDataDatasets() {
                 <section className="space-y-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="text-xs font-medium uppercase tracking-[0.08em] text-primary/80">Dataset Overview</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.08em] text-primary/80">{t('bigdata.datasetOverview')}</p>
                       <div className="mt-1 flex min-w-0 items-center gap-1.5">
                         <h2 className="min-w-0 truncate text-lg font-semibold">{selected.name}</h2>
                         <Button
@@ -795,7 +797,7 @@ export function BigDataDatasets() {
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7 shrink-0 text-muted-foreground hover:bg-primary/10 hover:text-primary"
-                          title="Rename dataset"
+                          title={t('bigdata.rename')}
                           onClick={() => openRename(selected)}
                         >
                           <Pencil className="h-3.5 w-3.5" />
@@ -803,7 +805,7 @@ export function BigDataDatasets() {
                       </div>
                     </div>
                     <Badge variant="outline" className={statusClass(selected.status)}>
-                      {statusLabel(selected.status)}
+                      {statusLabel(selected.status, t)}
                     </Badge>
                   </div>
 
@@ -816,19 +818,19 @@ export function BigDataDatasets() {
                   <div className="grid grid-cols-3 gap-2">
                     <div className="rounded-lg border border-border bg-accent/35 p-3">
                       <p className="text-xs text-muted-foreground">
-                        <HelpLabel tip={HELP_TEXT.rows}>Records</HelpLabel>
+                        <HelpLabel tip={HELP_TEXT.rows}>{t('bigdata.records')}</HelpLabel>
                       </p>
                       <p className="mt-1 text-sm font-semibold">{formatCount(selected.row_count)}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-accent/35 p-3">
                       <p className="text-xs text-muted-foreground">
-                        <HelpLabel tip={HELP_TEXT.columns}>Fields</HelpLabel>
+                        <HelpLabel tip={HELP_TEXT.columns}>{t('bigdata.fields')}</HelpLabel>
                       </p>
                       <p className="mt-1 text-sm font-semibold">{formatCount(selected.column_count)}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-accent/35 p-3">
                       <p className="text-xs text-muted-foreground">
-                        <HelpLabel tip={HELP_TEXT.datasetFormat}>Format</HelpLabel>
+                        <HelpLabel tip={HELP_TEXT.datasetFormat}>{t('bigdata.format')}</HelpLabel>
                       </p>
                       <p className="mt-1 text-sm font-semibold">{formatDatasetFormat(selected.format)}</p>
                     </div>
@@ -836,14 +838,14 @@ export function BigDataDatasets() {
                 </section>
 
                 <section className="rounded-lg border border-border bg-accent/20 p-4">
-                  <h3 className="text-sm font-semibold">What this dataset contains</h3>
+                  <h3 className="text-sm font-semibold">{t('bigdata.whatContains')}</h3>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">{overviewSummary}</p>
                 </section>
 
                 <section>
-                  <h3 className="mb-3 text-sm font-semibold">What you can analyze</h3>
+                  <h3 className="mb-3 text-sm font-semibold">{t('bigdata.whatAnalyze')}</h3>
                   {capabilities.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Run Spark processing to see analysis options.</p>
+                    <p className="text-sm text-muted-foreground">{t('bigdata.runProcessingOptions')}</p>
                   ) : (
                     <div className="grid gap-2 sm:grid-cols-2">
                       {capabilities.map(({ title, description, Icon }) => (
@@ -864,9 +866,9 @@ export function BigDataDatasets() {
                 </section>
 
                 <section className="rounded-lg border border-border p-4">
-                  <h3 className="text-sm font-semibold">Create Chat Sample</h3>
+                  <h3 className="text-sm font-semibold">{t('bigdata.createChatSampleTitle')}</h3>
                   <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                    Chat currently works with SQL datasets. This creates a small SQL sample from the Big Data file.
+                    {t('bigdata.createChatSampleText')}
                   </p>
                   <Button
                     type="button"
@@ -876,29 +878,29 @@ export function BigDataDatasets() {
                     onClick={() => void openChatSampleModal(selected.id)}
                     disabled={busyId === selected.id}
                   >
-                    Create chat sample
+                    {t('bigdata.createSample')}
                   </Button>
                 </section>
 
                 <details className="rounded-lg border border-border bg-accent/10">
                   <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold">
-                    Advanced Details
+                    {t('bigdata.advancedDetails')}
                   </summary>
                   <div className="space-y-5 border-t border-border p-4">
                     {selected.processed_path ? (
                       <div>
-                        <p className="text-xs text-muted-foreground mb-1">Processed path</p>
+                        <p className="text-xs text-muted-foreground mb-1">{t('bigdata.processedPath')}</p>
                         <p className="break-all rounded-lg bg-accent/35 p-3 text-xs">{selected.processed_path}</p>
                       </div>
                     ) : null}
 
                     <div>
                       <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-                        Schema
-                        <InfoTip label="Schema help" text={HELP_TEXT.schema} />
+                        {t('bigdata.schema')}
+                        <InfoTip label={t('bigdata.schemaHelpTitle')} text={HELP_TEXT.schema} />
                       </h3>
                       {schemaColumns.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">Schema will appear after Spark processing.</p>
+                        <p className="text-sm text-muted-foreground">{t('bigdata.schemaEmpty')}</p>
                       ) : (
                         <div className="max-h-44 overflow-auto rounded-lg border border-border">
                           {schemaColumns.map((column) => (
@@ -908,7 +910,7 @@ export function BigDataDatasets() {
                                 <p className="truncate text-[11px] text-muted-foreground">{column.name}</p>
                               </div>
                               <Badge variant="outline" className="!text-white/70" title={column.type}>
-                                {readableDataType(column.type)}
+                                {readableDataType(column.type, t)}
                               </Badge>
                             </div>
                           ))}
@@ -918,11 +920,11 @@ export function BigDataDatasets() {
 
                     <div>
                       <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-                        Spark Profile
-                        <InfoTip label="Spark profile help" text={HELP_TEXT.sparkProfile} />
+                        {t('bigdata.sparkProfile')}
+                        <InfoTip label={t('bigdata.sparkProfileHelp')} text={HELP_TEXT.sparkProfile} />
                       </h3>
                       {columns.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">Null counts, numeric stats, and top values will appear here.</p>
+                        <p className="text-sm text-muted-foreground">{t('bigdata.profileEmpty')}</p>
                       ) : (
                         <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
                           {columns.map((column) => (
@@ -933,19 +935,19 @@ export function BigDataDatasets() {
                                   <p className="truncate text-[11px] text-muted-foreground">{column.name}</p>
                                 </div>
                                 <Badge variant="outline" className="!text-white/70" title={column.type}>
-                                  {readableDataType(column.type)}
+                                  {readableDataType(column.type, t)}
                                 </Badge>
                               </div>
                               <p className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                                <HelpLabel tip={HELP_TEXT.nullCounts}>Nulls</HelpLabel>: {column.null_count ?? 0}
+                                <HelpLabel tip={HELP_TEXT.nullCounts}>{t('bigdata.nulls')}</HelpLabel>: {column.null_count ?? 0}
                               </p>
-                              {numericText(column) ? (
-                                <p className="text-xs text-muted-foreground mb-2">{numericText(column)}</p>
+                              {numericText(column, t) ? (
+                                <p className="text-xs text-muted-foreground mb-2">{numericText(column, t)}</p>
                               ) : null}
                               {column.top_values?.length ? (
                                 <div className="space-y-1">
                                   <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                    <HelpLabel tip={HELP_TEXT.topValues}>Top values</HelpLabel>
+                                    <HelpLabel tip={HELP_TEXT.topValues}>{t('bigdata.topValues')}</HelpLabel>
                                   </p>
                                   {column.top_values.slice(0, 5).map((item, index) => (
                                     <div key={`${column.name}-${index}`} className="flex items-center justify-between gap-2 text-xs">
@@ -965,7 +967,7 @@ export function BigDataDatasets() {
               </div>
             ) : (
               <div className="text-sm text-muted-foreground">
-                Select a Big Data dataset to inspect Spark-generated metadata.
+                {t('bigdata.selectInspect')}
               </div>
             )}
           </Card>
@@ -977,13 +979,13 @@ export function BigDataDatasets() {
             onOpenAutoFocus={(event) => event.preventDefault()}
           >
             <DialogHeader>
-              <DialogTitle>Rename dataset</DialogTitle>
+              <DialogTitle>{t('bigdata.rename')}</DialogTitle>
               <DialogDescription className="sr-only">
-                Change the display name of this Big Data dataset.
+                {t('bigdata.renameDescription')}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-2">
-              <Label className="text-white/70">Dataset name</Label>
+              <Label className="text-white/70">{t('bigdata.datasetName')}</Label>
               <Input
                 value={renameName}
                 maxLength={255}
@@ -997,10 +999,10 @@ export function BigDataDatasets() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setRenameTarget(null)}>
-                Close
+                {t('common.close')}
               </Button>
               <Button type="button" onClick={() => void submitRename()} disabled={renaming}>
-                Save
+                {t('common.save')}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -1012,23 +1014,23 @@ export function BigDataDatasets() {
             onOpenAutoFocus={(event) => event.preventDefault()}
           >
             <DialogHeader>
-              <DialogTitle>Upload Big Data file</DialogTitle>
+              <DialogTitle>{t('bigdata.upload')}</DialogTitle>
               <DialogDescription className="sr-only">
-                Upload or register a supported Big Data file for Spark processing.
+                {t('bigdata.uploadDescription')}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
-                <Label className="text-white/70">Dataset name</Label>
+                <Label className="text-white/70">{t('bigdata.datasetName')}</Label>
                 <Input
                   value={uploadName}
                   onChange={(event) => setUploadName(event.target.value)}
                   className="mt-1 bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
-                  placeholder="Optional name"
+                  placeholder={t('bigdata.optionalName')}
                 />
               </div>
               <div>
-                <Label className="text-white/70">Local file path</Label>
+                <Label className="text-white/70">{t('bigdata.localPath')}</Label>
                 <div className="mt-1 flex gap-2">
                   <Input
                     value={localPath}
@@ -1037,7 +1039,7 @@ export function BigDataDatasets() {
                     placeholder="C:\\Users\\...\\Video_Games.json"
                   />
                   <Button type="button" variant="outline" onClick={() => void onRegisterLocalFile()} disabled={uploading}>
-                    Register
+                    {t('bigdata.register')}
                   </Button>
                 </div>
               </div>
@@ -1059,7 +1061,7 @@ export function BigDataDatasets() {
                   <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-white/5">
                     <Upload className="h-5 w-5 text-white/70" />
                   </div>
-                  <p className="text-center text-sm text-white/80">Drop a supported file here or choose one</p>
+                  <p className="text-center text-sm text-white/80">{t('bigdata.dropFile')}</p>
                   <p className="text-center text-xs text-white/45">{SUPPORTED_BIGDATA_TEXT}</p>
                 </button>
                 <input
@@ -1077,7 +1079,7 @@ export function BigDataDatasets() {
               </Button>
               <Button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
                 {uploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
-                Choose file
+                {t('bigdata.chooseFile')}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -1089,54 +1091,54 @@ export function BigDataDatasets() {
             onOpenAutoFocus={(event) => event.preventDefault()}
           >
             <DialogHeader>
-              <DialogTitle>Chat sample</DialogTitle>
+              <DialogTitle>{t('bigdata.chatSample')}</DialogTitle>
               <DialogDescription className="sr-only">
-                Configure a smaller SQL-backed sample from the selected Big Data dataset.
+                {t('bigdata.sampleDescription')}
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-5">
               <p className="text-sm text-white/65">
-                Create a smaller working dataset from this large file for fast AI chat analytics.
+                {t('bigdata.createSampleIntro')}
               </p>
 
               <div className="grid gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm sm:grid-cols-3">
                 <div>
-                  <p className="text-xs text-white/45">Source</p>
+                  <p className="text-xs text-white/45">{t('bigdata.source')}</p>
                   <p className="truncate font-medium">{sampleSource?.name ?? '-'}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-white/45">Total source rows</p>
+                  <p className="text-xs text-white/45">{t('bigdata.totalRows')}</p>
                   <p className="font-medium">{sampleSource?.row_count ?? '-'}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-white/45">Available columns</p>
+                  <p className="text-xs text-white/45">{t('bigdata.availableColumns')}</p>
                   <p className="font-medium">{sampleAvailableColumns.length}</p>
                 </div>
               </div>
 
               <div>
-                <Label className="text-white/70">Sample dataset name</Label>
+                <Label className="text-white/70">{t('bigdata.sampleName')}</Label>
                 <Input
                   value={sampleName}
                   onChange={(event) => setSampleName(event.target.value)}
                   className="mt-1 bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
-                  placeholder="Big Data chat sample"
+                  placeholder={t('bigdata.samplePlaceholder')}
                 />
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <Label className="text-white/70">Row limit</Label>
+                  <Label className="text-white/70">{t('bigdata.rowLimit')}</Label>
                   <select
                     className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm !text-white focus:outline-none focus:ring-2 focus:ring-primary [&>option]:bg-[#1d1d2b] [&>option]:text-white"
                     value={sampleRowPreset}
                     onChange={(event) => setSampleRowPreset(event.target.value as '1000' | '5000' | '10000' | 'custom')}
                   >
-                    <option value="1000">1,000 rows</option>
-                    <option value="5000">5,000 rows</option>
-                    <option value="10000">10,000 rows</option>
-                    <option value="custom">Custom</option>
+                    <option value="1000">{t('bigdata.rowCount', { count: '1,000' })}</option>
+                    <option value="5000">{t('bigdata.rowCount', { count: '5,000' })}</option>
+                    <option value="10000">{t('bigdata.rowCount', { count: '10,000' })}</option>
+                    <option value="custom">{t('bigdata.custom')}</option>
                   </select>
                   {sampleRowPreset === 'custom' ? (
                     <Input
@@ -1146,26 +1148,26 @@ export function BigDataDatasets() {
                       value={sampleCustomRows}
                       onChange={(event) => setSampleCustomRows(event.target.value)}
                       className="mt-2 bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
-                      placeholder="Max 50000"
+                      placeholder={t('bigdata.maxRows', { count: '50000' })}
                     />
                   ) : null}
                 </div>
                 <div>
-                  <Label className="text-white/70">Sampling mode</Label>
+                  <Label className="text-white/70">{t('bigdata.samplingMode')}</Label>
                   <select
                     className="mt-1 w-full rounded-md border border-white/10 bg-[#1d1d2b] px-3 py-2 text-sm !text-white focus:outline-none focus:ring-2 focus:ring-primary [&>option]:bg-[#1d1d2b] [&>option]:text-white"
                     value={sampleMode}
                     onChange={(event) => setSampleMode(event.target.value as 'first' | 'random')}
                   >
-                    <option value="first">First rows</option>
-                    <option value="random">Random sample</option>
+                    <option value="first">{t('bigdata.firstRows')}</option>
+                    <option value="random">{t('bigdata.randomSample')}</option>
                   </select>
                 </div>
               </div>
 
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <Label className="text-white/70">Columns</Label>
+                  <Label className="text-white/70">{t('bigdata.columns')}</Label>
                   <div className="flex gap-2">
                     <Button
                       type="button"
@@ -1173,10 +1175,10 @@ export function BigDataDatasets() {
                       variant="outline"
                       onClick={() => setSampleColumns(sampleAvailableColumns.map((column) => column.name))}
                     >
-                      All
+                      {t('bigdata.all')}
                     </Button>
                     <Button type="button" size="sm" variant="outline" onClick={() => setSampleColumns([])}>
-                      None
+                      {t('bigdata.none')}
                     </Button>
                   </div>
                 </div>
@@ -1201,16 +1203,16 @@ export function BigDataDatasets() {
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div>
-                    <Label className="text-white/70">Filters</Label>
-                    <p className="text-xs text-white/45">Optional. Empty filter values are ignored.</p>
+                    <Label className="text-white/70">{t('bigdata.filters')}</Label>
+                    <p className="text-xs text-white/45">{t('bigdata.filtersHint')}</p>
                   </div>
                   <Button type="button" size="sm" variant="outline" onClick={addSampleFilter}>
-                    Add filter
+                    {t('bigdata.addFilter')}
                   </Button>
                 </div>
                 {sampleFilters.length === 0 ? (
                   <p className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm text-white/50">
-                    No filters. The sample will use rows from the full dataset.
+                    {t('bigdata.noFilters')}
                   </p>
                 ) : (
                   <div className="space-y-2">
@@ -1238,13 +1240,13 @@ export function BigDataDatasets() {
                           <option value=">=">&gt;=</option>
                           <option value="<">&lt;</option>
                           <option value="<=">&lt;=</option>
-                          <option value="contains">contains</option>
+                          <option value="contains">{t('bigdata.operator.contains')}</option>
                         </select>
                         <Input
                           value={filterItem.value}
                           onChange={(event) => updateSampleFilter(index, { value: event.target.value })}
                           className="bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
-                          placeholder="Value"
+                          placeholder={t('bigdata.value')}
                         />
                         <Button
                           type="button"
@@ -1252,7 +1254,7 @@ export function BigDataDatasets() {
                           variant="ghost"
                           className="h-10 w-10 hover:bg-destructive/10 hover:text-destructive"
                           onClick={() => removeSampleFilter(index)}
-                          title="Remove filter"
+                          title={t('bigdata.removeFilter')}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -1264,23 +1266,23 @@ export function BigDataDatasets() {
 
               {createdSample ? (
                 <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                  Created SQL dataset #{createdSample.dataset_id}: {createdSample.name}
+                  {t('bigdata.createdSample', { id: createdSample.dataset_id, name: createdSample.name })}
                 </div>
               ) : null}
             </div>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSampleOpen(false)}>
-                Close
+                {t('common.close')}
               </Button>
               {createdSample ? (
                 <Button type="button" onClick={openCreatedSampleInChat}>
-                  Open in Chat
+                  {t('bigdata.openChat')}
                 </Button>
               ) : null}
               <Button type="button" onClick={() => void createConfiguredChatSample()} disabled={creatingSample}>
                 {creatingSample ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-                Create Sample
+                {t('bigdata.createSample')}
               </Button>
             </DialogFooter>
           </DialogContent>

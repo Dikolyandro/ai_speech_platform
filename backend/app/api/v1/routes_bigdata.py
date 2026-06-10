@@ -37,6 +37,14 @@ from app.services.security_service import (
 router = APIRouter(prefix="/bigdata", tags=["Big Data"])
 
 
+def _lt(lang: str | None, ru: str, en: str, kk: str) -> str:
+    if lang == "en":
+        return en
+    if lang == "kk":
+        return kk
+    return ru
+
+
 class RenameBigDataDatasetReq(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
 
@@ -614,7 +622,12 @@ async def create_chat_sample_from_bigdata_dataset(
         "sampling_mode": body.sampling_mode,
         "row_limit": body.row_limit,
         "table_name": import_result.get("table_name"),
-        "note": "A SQL sample was created. Select it in chat to ask natural-language questions.",
+        "note": _lt(
+            getattr(user, "preferred_language", "ru"),
+            "SQL-выборка создана. Выберите ее в чате, чтобы задавать вопросы на естественном языке.",
+            "A SQL sample was created. Select it in chat to ask natural-language questions.",
+            "SQL үлгісі жасалды. Табиғи тілде сұрақ қою үшін оны чатта таңдаңыз.",
+        ),
     }
 
 

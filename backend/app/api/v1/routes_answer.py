@@ -45,6 +45,7 @@ class AnswerOptions(BaseModel):
     limit: int = 20
     explain: bool = True
     confidence_threshold: float = 0.55  # порог уверенности ML
+    execution_source: Optional[str] = None
 
 
 class AnswerRequest(BaseModel):
@@ -128,6 +129,112 @@ def _normalize(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+def _is_canonical_suggestion_query(q: str) -> bool:
+    """English templates generated internally for suggested-question chips."""
+    return bool(
+        re.match(r"^show average [a-zA-Z0-9_ .-]+$", q)
+        or re.match(r"^count records by [a-zA-Z0-9_ .-]+$", q)
+        or re.match(r"^show trend by [a-zA-Z0-9_ .-]+$", q)
+        or re.match(r"^show sample values from [a-zA-Z0-9_ .-]+$", q)
+        or re.match(r"^show top values by [a-zA-Z0-9_ .-]+$", q)
+        or re.match(r"^show minimum [a-zA-Z0-9_ .-]+$", q)
+        or re.match(r"^show maximum [a-zA-Z0-9_ .-]+$", q)
+        or re.match(r"^show sum of [a-zA-Z0-9_ .-]+$", q)
+        or q == "show first rows"
+    )
+
+
+def _resolve_canonical_suggestion_query(
+    q: str,
+    cols: list[tuple[str, str]] | None,
+) -> Optional[dict[str, Any]]:
+    """Resolve our internal suggested-question templates deterministically."""
+    query = _normalize(q)
+    if query == "show first rows":
+        return {"intent": "first_rows", "column": None}
+
+    columns_by_lower = {str(name).lower(): str(name) for name, _typ in cols or [] if str(name or "").strip()}
+    if not columns_by_lower:
+        return None
+
+    patterns: list[tuple[str, str]] = [
+        ("average", r"^show average (.+)$"),
+        ("count_by", r"^count records by (.+)$"),
+        ("trend_by", r"^show trend by (.+)$"),
+        ("sample", r"^show sample values from (.+)$"),
+        ("top_values", r"^show top values by (.+)$"),
+        ("min", r"^show minimum (.+)$"),
+        ("max", r"^show maximum (.+)$"),
+        ("sum", r"^show sum of (.+)$"),
+    ]
+    for intent, pattern in patterns:
+        m = re.match(pattern, query)
+        if not m:
+            continue
+        raw_col = m.group(1).strip().strip("`\"'")
+        col = columns_by_lower.get(raw_col.lower())
+        if col:
+            return {"intent": intent, "column": col}
+    return None
+
+
+def _strip_dataset_columns_for_language_validation(q: str, cols: list[tuple[str, str]] | None) -> str:
+    text_value = q or ""
+    for name, _typ in cols or []:
+        col = str(name or "").strip()
+        if not col:
+            continue
+        escaped = re.escape(col.lower())
+        text_value = re.sub(rf"(?<![a-zA-Z0-9_]){escaped}(?![a-zA-Z0-9_])", " ", text_value, flags=re.IGNORECASE)
+    return _normalize(text_value)
+
+
+def _canonicalize_localized_suggestion_query(q: str, cols: list[tuple[str, str]] | None) -> str:
+    query = _normalize(q)
+    for name, _typ in cols or []:
+        col = str(name or "").strip()
+        if not col:
+            continue
+        col_low = col.lower()
+        col_pattern = re.escape(col_low)
+        has_col = re.search(rf"(?<![a-zA-Z0-9_]){col_pattern}(?![a-zA-Z0-9_])", query, re.IGNORECASE)
+        if not has_col:
+            continue
+
+        if ("бойынша" in query and "орташа" in query) or re.search(rf"средн\w*\s+.*\bпо\s+{col_pattern}\b", query):
+            return f"show average {col}"
+        if ("бойынша" in query and ("жазбалар сан" in query or "санын" in query)) or re.search(
+            rf"(посчитать|количеств\w*)\s+.*\bпо\s+{col_pattern}\b", query
+        ):
+            return f"count records by {col}"
+        if ("бойынша" in query and ("үрдіс" in query or "тренд" in query)) or re.search(
+            rf"тренд\s+.*\bпо\s+{col_pattern}\b", query
+        ):
+            return f"show trend by {col}"
+        if ("бағанынан" in query and "мысал" in query) or re.search(rf"пример\w*\s+.*\bиз\s+{col_pattern}\b", query):
+            return f"show sample values from {col}"
+        if ("бойынша" in query and ("ең жиі" in query or "жиі мән" in query)) or re.search(
+            rf"(част\w*|частые)\s+.*\bпо\s+{col_pattern}\b", query
+        ):
+            return f"show top values by {col}"
+        if ("бойынша" in query and ("ең кіші" in query or "миним" in query)) or re.search(
+            rf"миним\w*\s+.*\bпо\s+{col_pattern}\b", query
+        ):
+            return f"show minimum {col}"
+        if ("бойынша" in query and ("ең үлкен" in query or "максим" in query)) or re.search(
+            rf"максим\w*\s+.*\bпо\s+{col_pattern}\b", query
+        ):
+            return f"show maximum {col}"
+        if ("бойынша" in query and ("соманы" in query or "қосынды" in query)) or re.search(
+            rf"сумм\w*\s+.*\bпо\s+{col_pattern}\b", query
+        ):
+            return f"show sum of {col}"
+
+    if "алғашқы жол" in query or "первые строки" in query:
+        return "show first rows"
+    return q
 
 
 def _dedupe_voice_transcript(raw: str) -> str:
@@ -497,6 +604,7 @@ def _should_force_select_for_table_rows(q_lex: str, operation: str) -> bool:
 
 _NETFLIX_CONFLICT_OVERRIDES: frozenset[str] = frozenset(
     {
+        "canonical_suggestion",
         "numeric_comparison_rows",
         "row_table_intent",
         "score_delta_vs_previous",
@@ -665,6 +773,19 @@ def _netflix_listed_in_nonempty_where_clause(where_sql: str) -> str:
     return f" WHERE {ws} AND {cond} "
 
 
+def _append_nonempty_group_where_clause(where_sql: str, group_col: str) -> str:
+    """Exclude NULL/blank grouping keys so charts are not dominated by empty buckets."""
+    dialect = (getattr(engine.dialect, "name", "") or "").lower()
+    cast_type = "CHAR" if dialect in ("mysql", "mariadb") else "TEXT"
+    cond = f"`{group_col}` IS NOT NULL AND TRIM(CAST(`{group_col}` AS {cast_type})) != ''"
+    ws = (where_sql or "").strip()
+    if not ws:
+        return f" WHERE {cond} "
+    if ws.upper().startswith("WHERE"):
+        return f"{ws} AND {cond} "
+    return f" WHERE {ws} AND {cond} "
+
+
 def _mysql_supports_recursive_split_cte(col_set: set[str]) -> bool:
     """MySQL 8.0.4+ ``WITH RECURSIVE`` + stable row id via ``show_id`` (Netflix CSV)."""
     if "show_id" not in col_set:
@@ -821,7 +942,7 @@ def _chart_infer_value_key(
     metric_col: Optional[str],
 ) -> Optional[str]:
     ks = _chart_row_keys(rows)
-    for k in ("sum", "count", "avg"):
+    for k in ("sum", "count", "avg", "min", "max"):
         if k in ks:
             return k
     if metric_col and metric_col in ks:
@@ -944,6 +1065,122 @@ def _lt(lang: str, ru: str, en: str, kk: str) -> str:
     return ru
 
 
+def _localized_control_response(kind: str, lang: str, *, dataset_name: str | None = None) -> str:
+    if kind == "safety":
+        return _lt(
+            lang,
+            "Я могу предоставлять достоверные аналитические ответы только на основе выбранного датасета. Пожалуйста, задавайте вопросы, связанные с загруженными данными или возможностями платформы.",
+            "I can only provide reliable analytical insights based on the currently selected dataset. Please ask questions related to the uploaded data or the platform's capabilities.",
+            "Мен тек таңдалған деректер жиыны негізінде сенімді аналитикалық жауаптар бере аламын. Өтінемін, жүктелген деректерге немесе платформаның мүмкіндіктеріне қатысты сұрақтар қойыңыз.",
+        )
+    if kind == "general":
+        return _lt(
+            lang,
+            "Данная платформа предназначена для аналитики на основе данных, а не для ответов на вопросы общего характера. Пожалуйста, задавайте вопросы, связанные с выбранным датасетом или самой платформой.",
+            "This platform is designed for dataset-driven analytics rather than general knowledge assistance. Please ask questions related to the selected dataset or the platform itself.",
+            "Бұл платформа жалпы білім сұрақтарына жауап беру үшін емес, деректерге негізделген аналитика үшін әзірленген. Өтінемін, таңдалған деректер жиынына немесе платформаның өзіне қатысты сұрақтар қойыңыз.",
+        )
+    if kind == "capabilities":
+        return _lt(
+            lang,
+            "Я могу анализировать датасеты с помощью запросов на естественном языке, строить визуализации, выявлять закономерности, создавать сводки по данным и помогать пользователям исследовать данные без знания SQL.",
+            "I can analyze datasets using natural language queries, generate visualizations, identify trends, summarize large datasets, and assist users in exploring data without requiring SQL knowledge.",
+            "Мен табиғи тілдегі сұраныстар арқылы деректер жиындарын талдай аламын, визуализациялар құра аламын, үрдістерді анықтай аламын және SQL білімінсіз деректерді зерттеуге көмектесе аламын.",
+        )
+    if kind == "current_dataset":
+        name = dataset_name or ""
+        return _lt(
+            lang,
+            f"В настоящее время я работаю с датасетом '{name}'. Вы можете задавать аналитические вопросы, связанные с его содержимым.",
+            f"I am currently working with the dataset '{name}'. You may ask analytical questions related to its contents.",
+            f"Қазіргі уақытта мен '{name}' деректер жиынымен жұмыс істеп жатырмын. Оның мазмұнына қатысты аналитикалық сұрақтар қоя аласыз.",
+        )
+    if kind == "clarify":
+        return _lt(
+            lang,
+            "Пожалуйста, уточните, какой аспект данных вы хотите проанализировать. Например: тренды, распределения, сравнения, взаимосвязи или сводную информацию.",
+            "Could you clarify which aspect of the dataset you would like to analyze? For example, trends, distributions, comparisons, correlations, or summaries.",
+            "Қандай талдау түрі қажет екенін нақтылаңыз. Мысалы: үрдістер, үлестірімдер, салыстырулар, байланыстар немесе жиынтық ақпарат.",
+        )
+    return _localized_control_response("safety", lang)
+
+
+def _control_payload(req: AnswerRequest, lang: str, kind: str, *, dataset_name: str | None = None) -> dict[str, Any]:
+    return {
+        "dataset_id": req.dataset_id,
+        "interpreted": {
+            "operation": "control_response",
+            "intent": kind,
+            "used_ml_intent": False,
+            "confidence_threshold": req.options.confidence_threshold,
+            "chart": {"enabled": False, "chart_type": None, "x": None, "y": None, "title": None},
+        },
+        "rows": [],
+        "answer_text": _localized_control_response(kind, lang, dataset_name=dataset_name),
+    }
+
+
+def _detect_control_intent(query: str) -> str | None:
+    q = _normalize(query)
+    if not q:
+        return "clarify"
+    if re.search(r"\b(what can you do|what are your capabilities|capabilities|help)\b", q, re.IGNORECASE):
+        return "capabilities"
+    if re.search(r"\b(what dataset are you analyzing|what data are you working with|current dataset|selected dataset)\b", q, re.IGNORECASE):
+        return "current_dataset"
+    if re.search(r"\b(who is|who wrote|what is\s+2\s*\+\s*2|exchange rate|president of|weather today|capital of)\b", q, re.IGNORECASE):
+        return "general"
+    if re.search(r"(кто президент|кто написал|курс валют|сколько будет|погода|столица|кім президент|кім жазды|валюта бағамы|ауа райы|астанасы)", q, re.IGNORECASE):
+        return "general"
+    if re.fullmatch(r"(analy[sz]e|analysis|анализ|проанализируй|талдау|талда)", q, re.IGNORECASE):
+        return "clarify"
+    return None
+
+
+def _query_relevant_to_dataset(
+    q_lex: str,
+    cols: list[tuple[str, str]],
+    semantic_meta: dict[str, Any],
+    semantic_layer_result: Optional[AnalyticsSemanticResult],
+) -> bool:
+    q = _normalize(q_lex)
+    if not q:
+        return False
+
+    for col, _typ in cols:
+        aliases = {col.lower(), *_col_aliases(col)}
+        if any(alias and re.search(rf"\b{re.escape(alias.lower())}\b", q, re.IGNORECASE) for alias in aliases):
+            return True
+
+    bindings = semantic_meta.get("column_bindings") or {}
+    grounding_methods = {"exact_in_query", "alias", "fuzzy", "pattern_po", "semantic_layer_v1"}
+    if any(
+        isinstance(v, dict)
+        and v.get("column")
+        and (v.get("method") in grounding_methods or float(v.get("score") or 0.0) >= 0.72)
+        for v in bindings.values()
+    ):
+        return True
+
+    if semantic_layer_result is not None:
+        if semantic_layer_result.confidence >= 0.45 and (
+            semantic_layer_result.detected_metric
+            or semantic_layer_result.detected_dimension
+            or semantic_layer_result.detected_date_column
+        ):
+            return True
+        if semantic_layer_result.confidence >= 0.45 and semantic_layer_result.detected_filters:
+            return True
+
+    analytic_terms = (
+        "average", "avg", "mean", "count", "sum", "total", "top", "trend", "distribution",
+        "compare", "correlation", "summary", "min", "max", "show", "list",
+        "сред", "колич", "сколько", "сумм", "топ", "тренд", "распредел", "сравн", "свод",
+        "орташа", "саны", "қанша", "барлығы", "топ", "үрдіс", "үлестір", "салыстыр", "жиынтық",
+    )
+    return any(term in q for term in analytic_terms)
+
+
 def _build_answer_text(
     operation: str,
     rows: list[dict[str, Any]],
@@ -1047,6 +1284,30 @@ def _build_answer_text(
             base += f" Условия: {cond_human}."
         return base
 
+    if operation == "min" and len(rows) == 1 and "min" in rows[0]:
+        v = _fmt_answer_num(rows[0]["min"])
+        base = _lt(
+            lang,
+            f"Минимальное значение по столбцу «{metric_col}» = {v}.",
+            f"Minimum value for column '{metric_col}' = {v}.",
+            f"«{metric_col}» бағаны бойынша ең кіші мән = {v}.",
+        )
+        if cond_human:
+            base += f" Условия: {cond_human}."
+        return base
+
+    if operation == "max" and len(rows) == 1 and "max" in rows[0]:
+        v = _fmt_answer_num(rows[0]["max"])
+        base = _lt(
+            lang,
+            f"Максимальное значение по столбцу «{metric_col}» = {v}.",
+            f"Maximum value for column '{metric_col}' = {v}.",
+            f"«{metric_col}» бағаны бойынша ең үлкен мән = {v}.",
+        )
+        if cond_human:
+            base += f" Условия: {cond_human}."
+        return base
+
     if operation == "sum" and group_col and rows and "group_key" in rows[0]:
         base = _lt(
             lang,
@@ -1070,7 +1331,7 @@ def _build_answer_text(
         return base
 
     if operation == "top" and group_col and rows and "group_key" in rows[0]:
-        key_name = metric_col or "числу записей или сумме"
+        key_name = metric_col or _lt(lang, "числу записей", "record count", "жазбалар саны")
         base = _lt(
             lang,
             f"Топ групп по колонке «{group_col}» (показатель: «{key_name}»).",
@@ -1094,26 +1355,19 @@ def _build_answer_text(
 
     if operation == "select":
         n = len(rows)
-        shown = col_labels[:6] + (["…"] if len(col_labels) > 6 else [])
-        sample_cols = ", ".join(f"«{c}»" for c in shown)
+        shown = col_labels[:6] + (["..."] if len(col_labels) > 6 else [])
+        sample_cols = ", ".join(str(c) for c in shown)
         base = _lt(
             lang,
-            f"Ниже таблица: {n} строк (лимит {limit}). Столбцы: {sample_cols}. ",
-            f"Table below: {n} rows (limit {limit}). Columns: {sample_cols}. ",
-            f"Төменде кесте: {n} жол (лимит {limit}). Бағандар: {sample_cols}. ",
+            f"Ниже показана таблица из {n} строк.\nСтолбцы: {sample_cols}.\nПоказаны первые {limit} строк из выбранного датасета.",
+            f"Below is a table with {n} rows.\nColumns: {sample_cols}.\nShowing the first {limit} rows from the selected dataset.",
+            f"Төменде {n} жолдан тұратын кесте көрсетілген.\nБағандар: {sample_cols}.\nТаңдалған деректер жиынынан алғашқы {limit} жол көрсетілді.",
         )
         if cond_human:
-            base += _lt(lang, f"Фильтр: {cond_human}. ", f"Filter: {cond_human}. ", f"Сүзгі: {cond_human}. ")
+            base += _lt(lang, f"\nФильтр: {cond_human}.", f"\nFilter: {cond_human}.", f"\nСүзгі: {cond_human}.")
         if sort_human:
-            base += sort_human
-        base += _lt(
-            lang,
-            "Числа в ячейках — значения полей датасета для каждой строки.",
-            "Numbers in cells are dataset field values for each row.",
-            "Ұяшықтағы сандар — әр жол үшін датасет өрістерінің мәндері.",
-        )
+            base += "\n" + sort_human.strip()
         return base.strip()
-
     return _lt(
         lang,
         "Найдены результаты по вашему запросу.",
@@ -1360,7 +1614,41 @@ async def answer_query(
             ),
         )
 
-    ok_lang, reason = validate_query_language(qtext, user_lang)
+    control_intent = _detect_control_intent(qtext)
+    if control_intent is not None:
+        return _control_payload(req, user_lang, control_intent, dataset_name=ds.name)
+
+    # Load schema before language validation so Latin dataset column names in localized
+    # queries (for example "release_year бойынша ...") do not make the query look English.
+    table_name = f"ds_{req.dataset_id}_data"
+    cols: Optional[list[tuple[str, str]]] = None
+    meta = (
+        await db.execute(select(DatasetTableMeta).where(DatasetTableMeta.dataset_id == req.dataset_id))
+    ).scalar_one_or_none()
+    if meta is not None:
+        cols = _cols_from_schema_profile(meta.columns_json)
+    if not cols:
+        cols = await _get_table_columns(db, table_name)
+    if not cols:
+        raise HTTPException(
+            status_code=404,
+            detail=_lt(
+                user_lang,
+                f"таблица {table_name} не найдена или не содержит колонок",
+                f"table {table_name} not found or has no columns",
+                f"{table_name} кестесі табылмады немесе бағандары жоқ",
+            ),
+        )
+
+    canonicalized_suggestion_query = _normalize(_canonicalize_localized_suggestion_query(qtext, cols))
+    is_localized_suggestion_query = canonicalized_suggestion_query != qtext
+    language_check_text = _strip_dataset_columns_for_language_validation(qtext, cols)
+    skip_language_guard = (
+        req.options.execution_source == "suggestion"
+        or _is_canonical_suggestion_query(qtext)
+        or is_localized_suggestion_query
+    )
+    ok_lang, reason = (True, "") if skip_language_guard else validate_query_language(language_check_text, user_lang)
     if not ok_lang:
         detail = _lt(
             user_lang,
@@ -1391,6 +1679,9 @@ async def answer_query(
             )
         raise HTTPException(status_code=400, detail=detail)
 
+    qtext = canonicalized_suggestion_query
+    canonical_suggestion = _resolve_canonical_suggestion_query(qtext, cols)
+
     document_answer = await _answer_from_uploaded_documents(
         db,
         req.dataset_id,
@@ -1405,27 +1696,6 @@ async def answer_query(
             }
         return document_answer
 
-    # 3) table + schema (раньше intent — нужны колонки для семантики; intent ниже по q_lex)
-    table_name = f"ds_{req.dataset_id}_data"
-    cols: Optional[list[tuple[str, str]]] = None
-    meta = (
-        await db.execute(select(DatasetTableMeta).where(DatasetTableMeta.dataset_id == req.dataset_id))
-    ).scalar_one_or_none()
-    if meta is not None:
-        cols = _cols_from_schema_profile(meta.columns_json)
-    if not cols:
-        cols = await _get_table_columns(db, table_name)
-    if not cols:
-        raise HTTPException(
-            status_code=404,
-            detail=_lt(
-                user_lang,
-                f"таблица {table_name} не найдена или не содержит колонок",
-                f"table {table_name} not found or has no columns",
-                f"{table_name} кестесі табылмады немесе бағандары жоқ",
-            ),
-        )
-
     sem = resolve_metric_and_group(cols, qtext)
     q_lex = sem["query_lexical"]
     metric_col = sem["metric_col"]
@@ -1438,6 +1708,8 @@ async def answer_query(
         "resolved_metric": metric_col,
         "resolved_group_by": group_col,
     }
+    if canonical_suggestion:
+        semantic_meta["canonical_suggestion"] = canonical_suggestion
 
     # Optional semantic layer: snapshot (always when run) + safe assist (fills gaps only; does not drive operation/SQL).
     semantic_layer_result: Optional[AnalyticsSemanticResult] = None
@@ -1463,11 +1735,52 @@ async def answer_query(
 
     # 2) Fallback logic: если низкая уверенность — используем эвристику
     threshold = float(req.options.confidence_threshold)
+    dataset_relevance = _query_relevant_to_dataset(q_lex, cols, semantic_meta, semantic_layer_result)
+    semantic_meta["dataset_relevance"] = dataset_relevance
+    if ml_conf < threshold and not dataset_relevance:
+        return _control_payload(req, user_lang, "safety", dataset_name=ds.name)
+
     operation = (
         ml_intent
         if (ml_intent != "fallback" and ml_conf >= threshold)
         else _detect_operation_heuristic(q_lex, user_lang)
     )
+    if canonical_suggestion:
+        suggestion_intent = str(canonical_suggestion.get("intent") or "")
+        suggestion_col = canonical_suggestion.get("column")
+        metric_col = None
+        group_col = None
+        semantic_meta["operation_override"] = "canonical_suggestion"
+        semantic_meta["canonical_suggestion_intent"] = suggestion_intent
+        if suggestion_intent == "average" and isinstance(suggestion_col, str):
+            operation = "avg"
+            metric_col = suggestion_col
+        elif suggestion_intent == "count_by" and isinstance(suggestion_col, str):
+            operation = "count"
+            group_col = suggestion_col
+        elif suggestion_intent == "trend_by" and isinstance(suggestion_col, str):
+            operation = "count"
+            group_col = suggestion_col
+            semantic_meta["canonical_order_by_group_key"] = "ASC"
+        elif suggestion_intent == "sample" and isinstance(suggestion_col, str):
+            operation = "select"
+            semantic_meta["select_columns"] = [suggestion_col]
+        elif suggestion_intent == "top_values" and isinstance(suggestion_col, str):
+            operation = "top"
+            group_col = suggestion_col
+        elif suggestion_intent == "min" and isinstance(suggestion_col, str):
+            operation = "min"
+            metric_col = suggestion_col
+        elif suggestion_intent == "max" and isinstance(suggestion_col, str):
+            operation = "max"
+            metric_col = suggestion_col
+        elif suggestion_intent == "sum" and isinstance(suggestion_col, str):
+            operation = "sum"
+            metric_col = suggestion_col
+        elif suggestion_intent == "first_rows":
+            operation = "select"
+        semantic_meta["resolved_metric"] = metric_col
+        semantic_meta["resolved_group_by"] = group_col
 
     if _comparison_demands_filtered_rows(q_lex):
         operation = "select"
@@ -1489,7 +1802,7 @@ async def answer_query(
                 }
                 break
 
-    if _should_force_select_for_table_rows(q_lex, operation):
+    if not canonical_suggestion and _should_force_select_for_table_rows(q_lex, operation):
         operation = "select"
         group_col = None
         semantic_meta["resolved_group_by"] = None
@@ -1506,7 +1819,7 @@ async def answer_query(
     if group_col and group_col not in col_set:
         group_col = None
 
-    explicit_avg_by = _resolve_explicit_average_by(q_lex, cols)
+    explicit_avg_by = None if canonical_suggestion else _resolve_explicit_average_by(q_lex, cols)
     if explicit_avg_by:
         metric_col, group_col = explicit_avg_by
         operation = "avg"
@@ -1514,7 +1827,7 @@ async def answer_query(
         semantic_meta["resolved_group_by"] = group_col
         semantic_meta["operation_override"] = "explicit_average_by"
     else:
-        explicit_top_values = _resolve_explicit_top_values(q_lex, cols)
+        explicit_top_values = None if canonical_suggestion else _resolve_explicit_top_values(q_lex, cols)
         if explicit_top_values:
             operation = "top"
             metric_col = None
@@ -1539,7 +1852,10 @@ async def answer_query(
         dd = semantic_layer_result.detected_dimension
         need_metric = not (metric_col and str(metric_col).strip())
         need_group = not (group_col and str(group_col).strip())
-        if semantic_meta.get("operation_override") == "explicit_top_values":
+        if canonical_suggestion:
+            need_metric = False
+            need_group = False
+        elif semantic_meta.get("operation_override") == "explicit_top_values":
             need_metric = False
         filled_m = (
             need_metric
@@ -1789,6 +2105,13 @@ async def answer_query(
     # нельзя отдавать весь датасет (`SELECT *`).
     # Вместо этого считаем итоговую агрегацию без группировки.
     order_sql_select = ""
+    select_columns_raw = semantic_meta.get("select_columns")
+    select_columns = (
+        [c for c in select_columns_raw if isinstance(c, str) and c in col_set]
+        if isinstance(select_columns_raw, list)
+        else []
+    )
+    select_sql = ", ".join(f"`{c}`" for c in select_columns) if select_columns else "*"
     if operation == "select" and order_by:
         oc, od = order_by
         if oc in col_set:
@@ -1799,7 +2122,7 @@ async def answer_query(
 
     if operation == "top" and nf_pat == "longest_movies" and group_col and metric_col == "duration":
         expr_sql = _netflix_duration_agg_expr_sql(metric_col)
-        long_where = where_sql
+        long_where = _append_nonempty_group_where_clause(where_sql, group_col)
         if "type" in col_set:
             cond = "LOWER(TRIM(CAST(`type` AS CHAR))) = 'movie'"
             if long_where.strip():
@@ -1846,10 +2169,11 @@ async def answer_query(
                 alias = "count"
 
             order_sql = f" ORDER BY `{alias}` DESC "
+            group_where = _append_nonempty_group_where_clause(where_sql, group_col)
             sql = f"""
                 SELECT `{group_col}` AS group_key, {agg_expr} AS `{alias}`
                 FROM `{table_name}`
-                {where_sql}
+                {group_where}
                 GROUP BY `{group_col}`
                 {order_sql}
                 LIMIT {limit}
@@ -1857,15 +2181,18 @@ async def answer_query(
 
     elif operation == "count":
         if group_col:
+            group_where = _append_nonempty_group_where_clause(where_sql, group_col)
             ord_sql = ""
             if nf_dom.get("matched") and nf_dom.get("order_by") == "release_year_asc":
                 ord_sql = " ORDER BY `group_key` ASC "
             elif nf_dom.get("matched") and nf_dom.get("order_by") == "count_desc":
                 ord_sql = " ORDER BY `count` DESC "
+            elif semantic_meta.get("canonical_order_by_group_key") == "ASC":
+                ord_sql = " ORDER BY `group_key` ASC "
             sql = f"""
                 SELECT `{group_col}` AS group_key, COUNT(*) AS `count`
                 FROM `{table_name}`
-                {where_sql}
+                {group_where}
                 GROUP BY `{group_col}`
                 {ord_sql}
                 LIMIT {limit}
@@ -1879,15 +2206,36 @@ async def answer_query(
                 LIMIT 1
             """
 
+    elif operation == "min":
+        if not metric_col:
+            raise HTTPException(status_code=400, detail="cannot min without metric column")
+        sql = f"""
+            SELECT MIN(`{metric_col}`) AS `min`
+            FROM `{table_name}`
+            {where_sql}
+            LIMIT 1
+        """
+
+    elif operation == "max":
+        if not metric_col:
+            raise HTTPException(status_code=400, detail="cannot max without metric column")
+        sql = f"""
+            SELECT MAX(`{metric_col}`) AS `max`
+            FROM `{table_name}`
+            {where_sql}
+            LIMIT 1
+        """
+
     elif operation == "sum":
         if not metric_col:
             raise HTTPException(status_code=400, detail="cannot sum without metric column")
 
         if group_col:
+            group_where = _append_nonempty_group_where_clause(where_sql, group_col)
             sql = f"""
                 SELECT `{group_col}` AS group_key, SUM(`{metric_col}`) AS `sum`
                 FROM `{table_name}`
-                {where_sql}
+                {group_where}
                 GROUP BY `{group_col}`
                 LIMIT {limit}
             """
@@ -1903,10 +2251,11 @@ async def answer_query(
         if not metric_col:
             raise HTTPException(status_code=400, detail="cannot avg without numeric metric column")
         if group_col:
+            group_where = _append_nonempty_group_where_clause(where_sql, group_col)
             sql = f"""
                 SELECT `{group_col}` AS group_key, AVG(`{metric_col}`) AS `avg`
                 FROM `{table_name}`
-                {where_sql}
+                {group_where}
                 GROUP BY `{group_col}`
                 LIMIT {limit}
             """
@@ -1923,18 +2272,18 @@ async def answer_query(
         if delta_order_cols:
             ca, cb = delta_order_cols
             sql = (
-                f"SELECT * FROM `{table_name}` {where_sql} "
+                f"SELECT {select_sql} FROM `{table_name}` {where_sql} "
                 f"ORDER BY (`{ca}` - `{cb}`) DESC LIMIT {limit}"
             )
         elif dual_extreme:
             oc, half = dual_extreme
             sql = (
-                f"(SELECT * FROM `{table_name}` {where_sql} ORDER BY `{oc}` ASC LIMIT {half}) "
+                f"(SELECT {select_sql} FROM `{table_name}` {where_sql} ORDER BY `{oc}` ASC LIMIT {half}) "
                 f"UNION ALL "
-                f"(SELECT * FROM `{table_name}` {where_sql} ORDER BY `{oc}` DESC LIMIT {half})"
+                f"(SELECT {select_sql} FROM `{table_name}` {where_sql} ORDER BY `{oc}` DESC LIMIT {half})"
             )
         else:
-            sql = f"SELECT * FROM `{table_name}` {where_sql} {order_sql_select} LIMIT {limit}"
+            sql = f"SELECT {select_sql} FROM `{table_name}` {where_sql} {order_sql_select} LIMIT {limit}"
 
     res = await db.execute(text(sql), params)
     rows = [dict(r._mapping) for r in res.fetchall()]
@@ -1960,6 +2309,7 @@ async def answer_query(
         }
 
     col_labels = [c[0] for c in cols]
+    answer_col_labels = select_columns or col_labels
     answer_text = _build_answer_text(
         operation,
         rows,
@@ -1968,7 +2318,7 @@ async def answer_query(
         metric_col=metric_col,
         limit=limit,
         filter_interpreted=filter_interpreted,
-        col_labels=col_labels,
+        col_labels=answer_col_labels,
     )
 
     out: dict[str, Any] = {

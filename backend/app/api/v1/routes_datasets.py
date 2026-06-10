@@ -26,6 +26,7 @@ from app.services.security_service import (
     read_upload_limited,
     validate_upload_extension,
 )
+from app.services.i18n_service import normalize_preferred_language
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -262,6 +263,7 @@ async def get_dataset_suggestions(
             dataset_id=dataset_id,
             columns=columns,
             dataset_summary=summary,
+            language=normalize_preferred_language(getattr(user, "preferred_language", "en")),
         ),
     }
 

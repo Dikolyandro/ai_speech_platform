@@ -31,6 +31,7 @@ import {
   type QueryAnswerChart,
 } from '../../lib/api';
 import { useI18n } from '../i18n/context';
+import type { Lang } from '../i18n/messages';
 import { AutoChart } from './analytics/AutoChart';
 import { ResultTable } from './result-table';
 import { AssistantMascot } from './assistant-mascot';
@@ -51,6 +52,7 @@ interface Message {
   /** полный ответ /api/v1/query/answer для сохранения */
   answerPayload?: Record<string, unknown>;
   userQuery?: string;
+  displayQuery?: string;
   conversationalIntent?: string;
   responseTimeMs?: number;
 }
@@ -73,23 +75,31 @@ type ConversationIntent =
   | { kind: 'help' }
   | { kind: 'capabilities' }
   | { kind: 'dataset_help' }
+  | { kind: 'current_dataset' }
+  | { kind: 'general_knowledge' }
+  | { kind: 'vague_analytics' }
   | { kind: 'thanks' };
 
-const SUGGESTION_CATEGORY_ORDER = [
-  'Fare',
-  'Distance',
-  'Passengers',
-  'Payments',
-  'Time',
-  'Locations',
-  'Vendors',
-  'Fees',
-  'numeric',
-  'categorical',
-  'boolean',
-  'date',
-  'text',
-];
+const SUGGESTION_CATEGORY_ORDER = ['numeric', 'categorical', 'date', 'text', 'boolean'];
+const SUGGESTION_INTENTS = ['average', 'count_by', 'trend_by', 'sample', 'top_values', 'min', 'max', 'sum', 'first_rows'] as const;
+const SUGGESTION_TYPES = ['numeric', 'categorical', 'date', 'text', 'boolean'] as const;
+
+type TranslateFn = (key: string, vars?: Record<string, string | number | null | undefined>) => string;
+type SuggestionIntent = (typeof SUGGESTION_INTENTS)[number];
+type SuggestionType = (typeof SUGGESTION_TYPES)[number];
+type RenderSuggestion = {
+  intent?: SuggestionIntent;
+  column?: string;
+  type?: SuggestionType;
+  category: string;
+  required_columns: string[];
+  displayText: Partial<Record<Lang, string>>;
+  title?: string;
+  query: string;
+  label?: string;
+  explanation?: string;
+  canonicalQuery: string;
+};
 
 function columnType(column: DatasetColumnProfile): string {
   return String(column.type ?? column.data_type ?? '').toLowerCase();
@@ -160,15 +170,19 @@ function classifyCapabilities(columns: DatasetColumnProfile[]): DatasetCapabilit
   };
 }
 
-function groupSuggestions(suggestions: DatasetSuggestion[]) {
-  const groups = new Map<string, DatasetSuggestion[]>();
+function groupSuggestions(suggestions: RenderSuggestion[]) {
+  const groups = new Map<string, RenderSuggestion[]>();
   const seen = new Set<string>();
   for (const suggestion of suggestions) {
-    const key = `${suggestion.title.trim().toLowerCase()}::${suggestion.query.trim().toLowerCase()}`;
+    const key = [
+      suggestion.intent ?? '',
+      suggestion.column?.toLowerCase() ?? '',
+      suggestion.type ?? '',
+      suggestion.query.toLowerCase(),
+    ].join('::');
     if (seen.has(key)) continue;
     seen.add(key);
-    const category = suggestion.category || 'Suggested';
-    groups.set(category, [...(groups.get(category) ?? []), suggestion]);
+    groups.set(suggestion.category, [...(groups.get(suggestion.category) ?? []), suggestion]);
   }
   return [...groups.entries()].sort(([a], [b]) => {
     const ai = SUGGESTION_CATEGORY_ORDER.indexOf(a);
@@ -178,6 +192,242 @@ function groupSuggestions(suggestions: DatasetSuggestion[]) {
     if (bi === -1) return -1;
     return ai - bi;
   });
+}
+
+function buildSuggestedQuestionText(suggestion: RenderSuggestion, language: Lang) {
+  const localized = suggestion.displayText[language] || suggestion.displayText.en;
+  if (localized) return localized;
+  const column = suggestion.column;
+  if (column) {
+    const intent = suggestion.intent || intentForCategory(suggestion.category);
+    if (intent === 'average') {
+      if (language === 'ru') return `Показать среднее значение по ${column}`;
+      if (language === 'kk') return `${column} бойынша орташа мәнді көрсету`;
+      return `Show average ${column}`;
+    }
+    if (intent === 'trend_by') {
+      if (language === 'ru') return `Показать тренд по ${column}`;
+      if (language === 'kk') return `${column} бойынша үрдісті көрсету`;
+      return `Show trend by ${column}`;
+    }
+    if (intent === 'sample') {
+      if (language === 'ru') return `Показать примеры из ${column}`;
+      if (language === 'kk') return `${column} бағанынан мысалдарды көрсету`;
+      return `Show sample values from ${column}`;
+    }
+    if (intent === 'count_by') {
+      if (language === 'ru') return `Посчитать количество записей по ${column}`;
+      if (language === 'kk') return `${column} бойынша жазбалар санын көрсету`;
+      return `Count records by ${column}`;
+    }
+    if (intent === 'top_values') {
+      if (language === 'ru') return `Показать самые частые значения по ${column}`;
+      if (language === 'kk') return `${column} бойынша ең жиі мәндерді көрсету`;
+      return `Show top values by ${column}`;
+    }
+    if (intent === 'min') {
+      if (language === 'ru') return `Показать минимальное значение по ${column}`;
+      if (language === 'kk') return `${column} бойынша ең кіші мәнді көрсету`;
+      return `Show minimum ${column}`;
+    }
+    if (intent === 'max') {
+      if (language === 'ru') return `Показать максимальное значение по ${column}`;
+      if (language === 'kk') return `${column} бойынша ең үлкен мәнді көрсету`;
+      return `Show maximum ${column}`;
+    }
+    if (intent === 'sum') {
+      if (language === 'ru') return `Показать сумму по ${column}`;
+      if (language === 'kk') return `${column} бойынша соманы көрсету`;
+      return `Show sum of ${column}`;
+    }
+  }
+  if (suggestion.intent === 'first_rows') {
+    if (language === 'ru') return 'Показать первые строки';
+    if (language === 'kk') return 'Алғашқы жолдарды көрсету';
+    return 'Show first rows';
+  }
+  if (language !== 'en') return '';
+  return suggestion.title || suggestion.label || suggestion.query;
+}
+
+function buildCanonicalSuggestedQuestion(suggestion: Pick<RenderSuggestion, 'intent' | 'column' | 'category' | 'query'>) {
+  const column = suggestion.column;
+  const intent = suggestion.intent || intentForCategory(suggestion.category);
+  if (column) {
+    if (intent === 'average') return `Show average ${column}`;
+    if (intent === 'trend_by') return `Show trend by ${column}`;
+    if (intent === 'sample') return `Show sample values from ${column}`;
+    if (intent === 'count_by') return `Count records by ${column}`;
+    if (intent === 'top_values') return `Show top values by ${column}`;
+    if (intent === 'min') return `Show minimum ${column}`;
+    if (intent === 'max') return `Show maximum ${column}`;
+    if (intent === 'sum') return `Show sum of ${column}`;
+  }
+  if (intent === 'first_rows') return 'Show first rows';
+  return suggestion.query;
+}
+
+function suggestionText(suggestion: RenderSuggestion, language: Lang) {
+  return buildSuggestedQuestionText(suggestion, language);
+}
+
+function suggestionCategoryText(category: string, t: TranslateFn) {
+  const translated = t(`suggestion.category.${category}`);
+  return translated === `suggestion.category.${category}` ? category : translated;
+}
+
+function suggestionDescription(suggestion: RenderSuggestion, t: TranslateFn, language: Lang) {
+  if (suggestion.explanation) return suggestion.explanation;
+  if (suggestion.column) return t('suggestion.description', { column: suggestion.column });
+  return suggestionText(suggestion, language);
+}
+
+function suggestionQuery(suggestion: RenderSuggestion, language: Lang) {
+  return buildSuggestedQuestionText(suggestion, language);
+}
+
+function isSuggestionIntent(value: unknown): value is SuggestionIntent {
+  return typeof value === 'string' && SUGGESTION_INTENTS.includes(value as SuggestionIntent);
+}
+
+function normalizeSuggestionIntent(value: unknown): SuggestionIntent | undefined {
+  if (isSuggestionIntent(value)) return value;
+  if (value === 'count') return 'count_by';
+  if (value === 'trend') return 'trend_by';
+  return undefined;
+}
+
+function intentForCategory(category: string): SuggestionIntent {
+  if (category === 'numeric') return 'average';
+  if (category === 'date') return 'trend_by';
+  if (category === 'text') return 'sample';
+  return 'count_by';
+}
+
+function categoryForIntent(intent: SuggestionIntent): SuggestionType {
+  if (intent === 'average' || intent === 'min' || intent === 'max' || intent === 'sum') return 'numeric';
+  if (intent === 'trend_by') return 'date';
+  if (intent === 'sample') return 'text';
+  if (intent === 'first_rows') return 'categorical';
+  return 'categorical';
+}
+
+function isSuggestionType(value: unknown): value is SuggestionType {
+  return typeof value === 'string' && SUGGESTION_TYPES.includes(value as SuggestionType);
+}
+
+function cleanString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeSuggestionCategory(value: string, type?: SuggestionType): string {
+  const normalized = value.trim().toLowerCase();
+  if (isSuggestionType(normalized)) return normalized;
+  return type || value || 'suggested';
+}
+
+function normalizeColumnLookupValue(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9а-яёәғқңөұүһі]+/gi, '');
+}
+
+function buildColumnAliasMap(columns: DatasetColumnProfile[]) {
+  const aliases = new Map<string, string>();
+  for (const column of columns) {
+    const name = columnName(column);
+    if (!name) continue;
+    aliases.set(normalizeColumnLookupValue(name), name);
+    aliases.set(normalizeColumnLookupValue(name.replace(/[_-]+/g, ' ')), name);
+    aliases.set(normalizeColumnLookupValue(prettyColumnName(name)), name);
+  }
+  return aliases;
+}
+
+function inferColumnFromText(text: string, columnAliases: Map<string, string>): string {
+  const normalizedText = normalizeColumnLookupValue(text);
+  let best = '';
+  let bestLength = 0;
+  for (const [alias, column] of columnAliases) {
+    if (!alias || alias.length < bestLength) continue;
+    if (normalizedText.includes(alias)) {
+      best = column;
+      bestLength = alias.length;
+    }
+  }
+  return best;
+}
+
+function inferTypeFromCategory(category: string): SuggestionType | undefined {
+  const normalized = category.toLowerCase();
+  return isSuggestionType(normalized) ? normalized : undefined;
+}
+
+function inferIntentFromText(text: string, category: string): SuggestionIntent {
+  const normalized = text.toLowerCase();
+  if (/\b(first rows|first records|show rows|sample rows)\b/.test(normalized)) return 'first_rows';
+  if (/\b(top values|most common|frequent|frequency)\b/.test(normalized)) return 'top_values';
+  if (/\b(min|minimum|lowest)\b/.test(normalized)) return 'min';
+  if (/\b(max|maximum|highest)\b/.test(normalized)) return 'max';
+  if (/\b(sum|total)\b/.test(normalized)) return 'sum';
+  if (/\b(avg|average|mean)\b/.test(normalized) || /средн|орташа/.test(normalized)) return 'average';
+  if (/\b(trend|trends|over time|date)\b/.test(normalized) || /тренд|үрдіс/.test(normalized)) return 'trend_by';
+  if (/\b(sample|example|examples|values)\b/.test(normalized) || /пример|мысал/.test(normalized)) return 'sample';
+  if (/\b(count|rows|records|number)\b/.test(normalized) || /количество|сан/.test(normalized)) return 'count_by';
+  return intentForCategory(category);
+}
+
+function sanitizeDatasetSuggestions(value: unknown, columns: DatasetColumnProfile[] = []): RenderSuggestion[] {
+  if (!Array.isArray(value)) return [];
+  const clean: RenderSuggestion[] = [];
+  const columnAliases = buildColumnAliasMap(columns);
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const title = cleanString(record.title);
+    const label = cleanString(record.label);
+    const rawQuery = cleanString(record.query);
+    const fallbackQuery = rawQuery || title || label;
+    const rawDisplayText = record.displayText;
+    const displayText =
+      rawDisplayText && typeof rawDisplayText === 'object'
+        ? (rawDisplayText as Partial<Record<Lang, string>>)
+        : {};
+    const requiredColumns = Array.isArray(record.required_columns)
+      ? record.required_columns.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      : [];
+    const inferredColumn =
+      cleanString(record.column) ||
+      requiredColumns[0]?.trim() ||
+      inferColumnFromText(fallbackQuery, columnAliases);
+    const type = isSuggestionType(record.type) ? record.type : undefined;
+    const rawCategory = cleanString(record.category);
+    const explanation = cleanString(record.explanation);
+    const column = inferredColumn;
+    const initialCategory = normalizeSuggestionCategory(rawCategory, type || inferTypeFromCategory(rawCategory));
+    const intent = normalizeSuggestionIntent(record.intent) || (column ? inferIntentFromText(fallbackQuery, initialCategory) : undefined);
+    if ((!column || !intent) && !fallbackQuery && intent !== 'first_rows') continue;
+    const category = normalizeSuggestionCategory(rawCategory, type || (intent ? categoryForIntent(intent) : undefined));
+    const query = fallbackQuery || column || 'Show first rows';
+    const canonicalQuery = cleanString(record.canonicalQuery) || buildCanonicalSuggestedQuestion({
+      intent,
+      column: column || undefined,
+      category,
+      query,
+    });
+    clean.push({
+      intent,
+      column: column || undefined,
+      type: type || inferTypeFromCategory(category),
+      category,
+      required_columns: requiredColumns.length ? requiredColumns : column ? [column] : [],
+      displayText,
+      title: title || undefined,
+      query,
+      label: label || undefined,
+      explanation: explanation || undefined,
+      canonicalQuery,
+    });
+  }
+  return clean;
 }
 
 function normalizeChatText(value: string) {
@@ -232,6 +482,21 @@ function detectConversationIntent(text: string): ConversationIntent {
     return { kind: 'capabilities' };
   }
   if (
+    /\b(what dataset are you analyzing|what data are you working with|current dataset|selected dataset)\b/.test(q) ||
+    /(какой датасет|с каким датасетом|какие данные|текущий датасет|выбранный датасет|қай деректер жиыны|қандай деректер|ағымдағы деректер жиыны|таңдалған деректер жиыны)/.test(q)
+  ) {
+    return { kind: 'current_dataset' };
+  }
+  if (
+    /\b(who is|who wrote|what is 2\s*\+\s*2|exchange rate|president of|weather today|capital of)\b/.test(q) ||
+    /(кто написал|кто президент|курс валют|сколько будет|погода|столица|кім жазды|кім президент|валюта бағамы|ауа райы|астанасы)/.test(q)
+  ) {
+    return { kind: 'general_knowledge' };
+  }
+  if (/^(analy[sz]e|analysis|талдау|анализ|проанализируй|талда)$/.test(q)) {
+    return { kind: 'vague_analytics' };
+  }
+  if (
     /\b(what can i ask about this dataset|suggest queries|suggest questions|help with this dataset)\b/.test(q) ||
     /(что можно спросить по этому датасету|помоги с этим датасетом|предложи запросы|предложи вопросы)/.test(q)
   ) {
@@ -248,52 +513,40 @@ function buildConversationResponse(
   options: {
     name?: string;
     hasDataset: boolean;
-    suggestions: DatasetSuggestion[];
+    datasetName?: string | null;
+    suggestions: RenderSuggestion[];
+    t: (key: string, vars?: Record<string, string | number | null | undefined>) => string;
   }
 ) {
   if (intent.kind === 'name') {
-    return `Hi, ${intent.name}! Ready to analyze your data?`;
+    return options.t('ai.greeting', { name: intent.name });
   }
   if (intent.kind === 'greeting') {
-    return `${options.name ? `Hi, ${options.name}` : 'Hi'} 👋 I'm ready to help you explore this dataset. You can ask me about averages, counts, top values, distributions, or trends.`;
+    return options.t('ai.greeting', { name: options.name || 'Analyst' });
   }
   if (intent.kind === 'smalltalk') {
-    return "I'm doing well and ready to analyze your data. Choose a suggested question below or ask your own.";
+    return options.t('ai.smalltalk');
   }
-  if (intent.kind === 'help') {
-    return [
-      'I can help you analyze your data without writing SQL. You can ask questions such as:',
-      '• average values',
-      '• counts by category',
-      '• top records',
-      '• distributions',
-      '• trends over time',
-      '• charts and visual insights',
-      '',
-      'For large datasets, process them with Spark first, create a smaller chat sample, and then analyze it here.',
-    ].join('\n');
+  if (intent.kind === 'help' || intent.kind === 'capabilities') {
+    return options.t('ai.capabilities');
   }
-  if (intent.kind === 'capabilities') {
-    return [
-      'I can act as your analytics assistant for this platform.',
-      '',
-      'I can help you upload datasets, process Big Data with Spark, create chat samples, ask natural-language questions, generate SQL-backed answers, build charts, save useful queries, and use voice input.',
-      '',
-      'When a dataset is selected, I also generate useful questions from its actual columns.',
-    ].join('\n');
+  if (intent.kind === 'current_dataset') {
+    if (!options.hasDataset || !options.datasetName) return options.t('ai.noDataset');
+    return options.t('ai.currentDataset', { dataset_name: options.datasetName });
+  }
+  if (intent.kind === 'general_knowledge') {
+    return options.t('ai.generalKnowledge');
+  }
+  if (intent.kind === 'vague_analytics') {
+    return options.t('ai.clarify');
   }
   if (intent.kind === 'dataset_help') {
-    if (!options.hasDataset) {
-      return 'Please select a dataset first, and I will suggest useful questions based on its columns.';
-    }
-    if (!options.suggestions.length) {
-      return 'I can help with this dataset, but I could not read enough column details yet. Try asking about averages, counts, top values, or trends.';
-    }
-    return 'I found useful questions for this dataset based on its columns. Check the suggestions panel below, or ask your own question in plain language.';
+    if (!options.hasDataset) return options.t('ai.noDataset');
+    if (!options.suggestions.length) return options.t('ai.datasetHelpNoColumns');
+    return options.t('ai.datasetHelpReady');
   }
-  return "You're welcome! You can ask another question or choose one of the dataset suggestions.";
+  return options.t('ai.thanks');
 }
-
 function FieldList({ label, values }: { label: string; values: string[] }) {
   if (!values.length) return null;
   return (
@@ -367,15 +620,16 @@ function hasVisibleChart(payload: Record<string, unknown> | undefined): boolean 
   return Boolean(chart?.enabled !== false && chart?.chart_type && chart.chart_type !== 'table');
 }
 
-function formatResponseTime(ms: number): string {
-  if (ms < 1000) return `Generated in ${Math.round(ms)} ms`;
-  return `Generated in ${(ms / 1000).toFixed(2)} s`;
+function formatResponseTime(ms: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  if (ms < 1000) return t('chat.generatedMs', { ms: Math.round(ms) });
+  return t('chat.generatedS', { s: (ms / 1000).toFixed(2) });
 }
 
 function mapDtoToMessage(m: ChatMessageDto): Message {
   const meta = m.meta_json as {
     answer?: Record<string, unknown>;
     userQuery?: string;
+    displayQuery?: string;
     conversational?: boolean;
     intent?: string;
     voice?: {
@@ -396,12 +650,13 @@ function mapDtoToMessage(m: ChatMessageDto): Message {
     timestamp: m.created_at ? new Date(m.created_at) : new Date(),
     answerPayload: meta?.answer,
     userQuery: meta?.userQuery,
+    displayQuery: typeof meta?.displayQuery === 'string' ? meta.displayQuery : undefined,
     conversationalIntent: meta?.conversational ? meta.intent || 'conversation' : undefined,
   };
 }
 
 export function ChatSession() {
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
   const { sessionId: sessionIdParam } = useParams();
   const navigate = useNavigate();
   const auth = useAuth();
@@ -415,7 +670,7 @@ export function ChatSession() {
   const [nameDraft, setNameDraft] = useState('');
   const [datasetContext, setDatasetContext] = useState<DatasetChatContext | null>(null);
   const [datasetContextLoading, setDatasetContextLoading] = useState(false);
-  const [datasetSuggestions, setDatasetSuggestions] = useState<DatasetSuggestion[]>([]);
+  const [datasetSuggestions, setDatasetSuggestions] = useState<RenderSuggestion[]>([]);
   const [datasetChangeNoticeId, setDatasetChangeNoticeId] = useState<number | 'none' | null>(null);
   const [suggestionsExpanded, setSuggestionsExpanded] = useState(false);
   const [audioTranscriptOpen, setAudioTranscriptOpen] = useState<Record<string, boolean>>({});
@@ -450,10 +705,14 @@ export function ChatSession() {
   );
   const activeDatasetRows = datasetContext?.row_count ?? null;
   const activeDatasetColumns = datasetColumnCount(datasetContext);
-  const activeDatasetType = datasetContext?.bigdata_sample ? 'Big Data sample' : 'Standard dataset';
+  const activeDatasetType = datasetContext?.bigdata_sample ? 'Big Data' : t('chat.standardDataset');
   const capabilityGroups = useMemo(() => classifyCapabilities(datasetContext?.columns ?? []), [datasetContext]);
-  const introSuggestionGroups = useMemo(() => groupSuggestions(datasetSuggestions), [datasetSuggestions]);
-  const visibleNextSuggestions = suggestionsExpanded ? datasetSuggestions : datasetSuggestions.slice(0, 6);
+  const localizedDatasetSuggestions = useMemo(
+    () => datasetSuggestions.filter((suggestion) => Boolean(buildSuggestedQuestionText(suggestion, lang))),
+    [datasetSuggestions, lang]
+  );
+  const introSuggestionGroups = useMemo(() => groupSuggestions(localizedDatasetSuggestions), [localizedDatasetSuggestions]);
+  const visibleNextSuggestions = suggestionsExpanded ? localizedDatasetSuggestions : localizedDatasetSuggestions.slice(0, 6);
   const nextSuggestionGroups = useMemo(() => groupSuggestions(visibleNextSuggestions), [visibleNextSuggestions]);
   const greetingName =
     chatDisplayName ||
@@ -546,9 +805,12 @@ export function ChatSession() {
     void Promise.allSettled([getDatasetChatContext(datasetId), getDatasetSuggestions(datasetId)])
       .then(([contextResult, suggestionsResult]) => {
         if (cancelled) return;
-        setDatasetContext(contextResult.status === 'fulfilled' ? contextResult.value : null);
+        const nextContext = contextResult.status === 'fulfilled' ? contextResult.value : null;
+        setDatasetContext(nextContext);
         setDatasetSuggestions(
-          suggestionsResult.status === 'fulfilled' ? suggestionsResult.value.suggestions : []
+          suggestionsResult.status === 'fulfilled'
+            ? sanitizeDatasetSuggestions(suggestionsResult.value.suggestions, nextContext?.columns ?? [])
+            : []
         );
       })
       .catch(() => {
@@ -563,7 +825,7 @@ export function ChatSession() {
     return () => {
       cancelled = true;
     };
-  }, [datasetId]);
+  }, [datasetId, lang]);
 
   const saveChatDisplayName = useCallback((value: string) => {
     const clean = value.trim().slice(0, 40);
@@ -571,14 +833,19 @@ export function ChatSession() {
     localStorage.setItem(CHAT_NAME_STORAGE_KEY, clean);
     setChatDisplayName(clean);
     setNameDraft('');
-    toast.success(`Nice to meet you, ${clean}`);
-  }, []);
+    toast.success(t('chat.niceToMeet', { name: clean }));
+  }, [t]);
 
   const sendPipeline = useCallback(
-    async (text: string, overrideDatasetId?: number | null) => {
-      const q = text.trim();
+    async (
+      text: string,
+      overrideDatasetId?: number | null,
+      options?: { canonicalText?: string; displayText?: string; executionSource?: 'suggestion' | 'manual' }
+    ) => {
+      const q = (options?.displayText ?? text).trim();
       if (!q) return;
-      const queryForApi = mergeFollowUpDataQuery(messages, q);
+      const canonicalBase = (options?.canonicalText ?? text).trim();
+      const queryForApi = options?.canonicalText ? canonicalBase : mergeFollowUpDataQuery(messages, canonicalBase);
       const dsId = overrideDatasetId ?? datasetId;
       let conversationIntent = detectConversationIntent(q);
       const normalizedConversationText = normalizeChatText(q);
@@ -599,14 +866,22 @@ export function ChatSession() {
               ? q.slice(0, 80) || t('chat.newChatTitle')
               : activeDatasetName
                 ? `${activeDatasetName} assistant`
-                : 'AI assistant chat';
+                : t('chat.assistantChatTitle');
           const created = await createChatSession(title);
           sid = created.id;
           navigate(`/session/${sid}`, { replace: true });
         }
         activeSid = sid;
 
-        await appendChatMessage(sid, { role: 'user', content: q });
+        await appendChatMessage(sid, {
+          role: 'user',
+          content: q,
+          meta_json: {
+            displayQuery: q,
+            userQuery: queryForApi,
+            canonicalQuery: queryForApi,
+          },
+        });
 
         if (conversationIntent.kind !== 'none') {
           if (conversationIntent.kind === 'name') {
@@ -617,7 +892,9 @@ export function ChatSession() {
           const response = buildConversationResponse(conversationIntent, {
             name: greetingName,
             hasDataset: dsId != null,
-            suggestions: datasetSuggestions,
+            datasetName: activeDatasetName,
+            suggestions: localizedDatasetSuggestions,
+            t,
           });
           await appendChatMessage(sid, {
             role: 'assistant',
@@ -641,7 +918,12 @@ export function ChatSession() {
         const answer = await postQueryAnswer({
           dataset_id: dsId,
           input: { type: 'text', text: queryForApi },
-          options: { limit: 20, explain: true, confidence_threshold: 0.55 },
+          options: {
+            limit: 20,
+            explain: true,
+            confidence_threshold: 0.55,
+            ...(options?.executionSource ? { execution_source: options.executionSource } : {}),
+          },
         });
         const responseTimeMs = performance.now() - startedAt;
 
@@ -651,6 +933,7 @@ export function ChatSession() {
           meta_json: {
             answer: answer as unknown as Record<string, unknown>,
             userQuery: queryForApi,
+            displayQuery: q,
             sql: answer.sql,
           },
         });
@@ -668,7 +951,7 @@ export function ChatSession() {
           await appendChatMessage(activeSid, {
             role: 'assistant',
             content:
-              'I could not confidently understand this request. Try asking about averages, counts, top values, distributions, or select one of the suggested questions.',
+              t('chat.uncertain'),
             meta_json: {
               conversational: true,
               intent: 'unclear',
@@ -683,7 +966,7 @@ export function ChatSession() {
         setTextDraft('');
       }
     },
-    [datasetId, sessionIdParam, navigate, loadMessages, messages, t, greetingName, datasetSuggestions, activeDatasetName]
+    [datasetId, sessionIdParam, navigate, loadMessages, messages, t, greetingName, localizedDatasetSuggestions, activeDatasetName]
   );
 
   useEffect(() => {
@@ -693,9 +976,18 @@ export function ChatSession() {
     ranSavedRef.current = true;
     sessionStorage.removeItem('runSavedQuery');
     try {
-      const parsed = JSON.parse(raw) as { text: string; datasetId?: number | null };
+      const parsed = JSON.parse(raw) as {
+        text: string;
+        canonicalText?: string;
+        displayText?: string;
+        datasetId?: number | null;
+      };
       if (typeof parsed.datasetId === 'number') setDatasetId(parsed.datasetId);
-      void sendPipeline(parsed.text, parsed.datasetId ?? undefined);
+      void sendPipeline(parsed.canonicalText || parsed.text, parsed.datasetId ?? undefined, {
+        canonicalText: parsed.canonicalText || parsed.text,
+        displayText: parsed.displayText || parsed.text,
+        executionSource: parsed.canonicalText && parsed.displayText && parsed.canonicalText !== parsed.displayText ? 'suggestion' : undefined,
+      });
     } catch {
       /* ignore */
     }
@@ -773,7 +1065,7 @@ export function ChatSession() {
     if (!file) return;
     const ok = /\.(csv|xlsx|json)$/i.test(file.name);
     if (!ok) {
-      toast.error('Upload a CSV, XLSX, or JSON dataset');
+      toast.error(t('chat.uploadSupportedDataset'));
       return;
     }
     setSending(true);
@@ -813,8 +1105,9 @@ export function ChatSession() {
       const sql = (m.answerPayload as { sql?: string }).sql;
       const answerText = (m.answerPayload as { answer_text?: string }).answer_text ?? m.content;
       const sourceSessionId = sessionIdParam ? parseInt(sessionIdParam, 10) : null;
+      const displayQuery = m.displayQuery || m.userQuery;
       const saved = await createSavedQuery({
-        title: m.userQuery.slice(0, 120) || 'Saved query',
+        title: displayQuery.slice(0, 120) || 'Saved query',
         query_text: m.userQuery,
         sql_text: sql ?? null,
         answer_text: answerText,
@@ -823,6 +1116,8 @@ export function ChatSession() {
           saved_meta: {
             session_id: Number.isFinite(sourceSessionId) ? sourceSessionId : null,
             message_id: m.id,
+            display_query: displayQuery,
+            canonical_query: m.userQuery,
           },
         },
         dataset_id: datasetId,
@@ -1047,7 +1342,7 @@ export function ChatSession() {
       const localAudioUrl = URL.createObjectURL(recordedBlob);
       const voiceMessage = await appendChatMessage(sid, {
         role: 'user',
-        content: 'Voice message',
+        content: t('chat.voiceMessageFallback'),
         meta_json: {
           userQuery: voiceText,
           voice: {
@@ -1076,7 +1371,9 @@ export function ChatSession() {
         const response = buildConversationResponse(voiceConversationIntent, {
           name: greetingName,
           hasDataset: datasetId != null,
-          suggestions: datasetSuggestions,
+          datasetName: activeDatasetName,
+          suggestions: localizedDatasetSuggestions,
+          t,
         });
         await appendChatMessage(sid, {
           role: 'assistant',
@@ -1145,11 +1442,17 @@ export function ChatSession() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const runSuggestion = (suggestion: DatasetSuggestion) => {
+  const runSuggestion = (suggestion: RenderSuggestion) => {
     if (sending) return;
     setComposerMode('text');
     setSuggestionsExpanded(false);
-    void sendPipeline(suggestion.query);
+    const query = suggestionQuery(suggestion, lang);
+    if (!query) return;
+    void sendPipeline(query, undefined, {
+      canonicalText: suggestion.canonicalQuery,
+      displayText: query,
+      executionSource: 'suggestion',
+    });
   };
 
   const isNewSession = !sessionIdParam && messages.length === 0;
@@ -1168,13 +1471,13 @@ export function ChatSession() {
             <div className="mx-auto grid w-full max-w-5xl items-start gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)]">
               <div className="min-w-0 pt-4 text-center lg:text-left">
                 <h2 className="text-3xl font-semibold bg-gradient-to-r from-purple-400 to-violet-400 bg-clip-text text-transparent">
-                  {greetingName ? `Hi, ${greetingName}.` : 'Hi! How should I address you?'}
+                  {greetingName ? t('chat.greetingShort', { name: greetingName }) : t('chat.askName')}
                 </h2>
                 <p className="mt-3 text-muted-foreground text-lg">
                   {datasetId == null
-                    ? 'No dataset is selected yet.'
+                    ? t('chat.noDatasetSelectedShort')
                     : activeDatasetName
-                      ? `I can help you explore ${activeDatasetName} in plain language.`
+                      ? t('chat.canExploreDataset', { name: activeDatasetName })
                       : t('chat.welcome')}
                 </p>
 
@@ -1184,42 +1487,42 @@ export function ChatSession() {
                     <div className="min-w-0 flex-1">
                       {datasetId == null ? (
                         <>
-                          <p className="text-sm font-semibold text-white">Hi 👋</p>
+                          <p className="text-sm font-semibold text-white">{t('chat.helloShort')}</p>
                           <p className="mt-1 text-sm leading-6 text-white/65">
-                            No dataset is selected yet. Please upload a dataset or choose one from the selector above to start analysis.
+                            {t('chat.noDatasetSelectedLong')}
                           </p>
                         </>
                       ) : datasetContext ? (
                         <>
                           <p className="text-sm font-semibold text-white">
-                            {greetingName ? `Hi, ${greetingName} 👋` : 'Hi 👋'}
+                            {greetingName ? t('chat.greetingShort', { name: greetingName }) : t('chat.helloShort')}
                           </p>
                           <p className="mt-1 text-sm leading-6 text-white/65">
-                            I am connected to the selected dataset.
+                            {t('chat.connectedDataset')}
                           </p>
                           <div className="mt-3 grid gap-2 text-xs text-white/70 sm:grid-cols-3">
                             <div className="rounded-xl border border-white/10 bg-white/[0.04] p-2">
-                              <p className="text-white/40">Dataset</p>
+                              <p className="text-white/40">{t('header.dataset')}</p>
                               <p className="mt-1 truncate font-medium text-white">{datasetContext.name}</p>
                             </div>
                             <div className="rounded-xl border border-white/10 bg-white/[0.04] p-2">
-                              <p className="text-white/40">Records</p>
+                              <p className="text-white/40">{t('chat.records')}</p>
                               <p className="mt-1 font-medium text-white">{formatDatasetCount(datasetContext.row_count)}</p>
                             </div>
                             <div className="rounded-xl border border-white/10 bg-white/[0.04] p-2">
-                              <p className="text-white/40">Columns</p>
+                              <p className="text-white/40">{t('chat.columnsLabel')}</p>
                               <p className="mt-1 font-medium text-white">{formatDatasetCount(datasetColumnCount(datasetContext))}</p>
                             </div>
                           </div>
                           <p className="mt-3 text-sm leading-6 text-white/65">
-                            You can ask questions about this dataset or choose one of the suggested analyses below.
+                            {t('chat.askOrChoose')}
                           </p>
                         </>
                       ) : (
                         <>
-                          <p className="text-sm font-semibold text-white">Connecting to dataset...</p>
+                          <p className="text-sm font-semibold text-white">{t('chat.connectingDataset')}</p>
                           <p className="mt-1 text-sm leading-6 text-white/65">
-                            I am loading the selected dataset metadata before suggesting analyses.
+                            {t('chat.loadingDatasetMeta')}
                           </p>
                         </>
                       )}
@@ -1238,7 +1541,7 @@ export function ChatSession() {
                     <Input
                       value={nameDraft}
                       onChange={(e) => setNameDraft(e.target.value)}
-                      placeholder="Your name"
+                      placeholder={t('chat.yourName')}
                       className="h-11 rounded-xl border-white/10 bg-white/[0.04]"
                     />
                     <Button
@@ -1246,7 +1549,7 @@ export function ChatSession() {
                       disabled={!nameDraft.trim()}
                       className="h-11 rounded-xl bg-gradient-to-br from-purple-500 to-violet-600 px-5"
                     >
-                      Save
+                      {t('common.save')}
                     </Button>
                     {auth.state.status === 'authenticated' && auth.state.user.nickname && (
                       <Button
@@ -1255,7 +1558,7 @@ export function ChatSession() {
                         className="h-11 rounded-xl border border-white/10 bg-white/[0.04]"
                         onClick={() => saveChatDisplayName(auth.state.user.nickname)}
                       >
-                        Use {auth.state.user.nickname}
+                        {t('chat.useName', { name: auth.state.user.nickname })}
                       </Button>
                     )}
                   </form>
@@ -1276,38 +1579,38 @@ export function ChatSession() {
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
                       <Database className="h-4 w-4 shrink-0 text-violet-300" />
-                      <h3 className="truncate text-sm font-semibold text-white">What you can do with this dataset</h3>
+                      <h3 className="truncate text-sm font-semibold text-white">{t('chat.whatCanDoDataset')}</h3>
                     </div>
                     {datasetContextLoading && <Loader2 className="h-4 w-4 animate-spin text-white/50" />}
                   </div>
                   {datasetId == null ? (
-                    <p className="text-sm text-white/55">Choose a dataset to see suggested questions and fields.</p>
+                    <p className="text-sm text-white/55">{t('chat.chooseDatasetSuggestions')}</p>
                   ) : (
                     <div className="space-y-3">
                       {datasetContext?.bigdata_sample && (
                         <div className="rounded-xl border border-violet-400/20 bg-violet-500/10 px-3 py-2">
                           <div className="flex flex-wrap items-center gap-2">
-                            <Badge className="bg-violet-500/20 text-violet-100">Created from Big Data sample</Badge>
+                            <Badge className="bg-violet-500/20 text-violet-100">{t('chat.createdFromBigDataSample')}</Badge>
                             {datasetContext.bigdata_sample.source_dataset_name && (
                               <span className="text-xs text-white/60">
-                                Source: {datasetContext.bigdata_sample.source_dataset_name}
+                                {t('chat.sourceLabel')}: {datasetContext.bigdata_sample.source_dataset_name}
                               </span>
                             )}
                             {datasetContext.bigdata_sample.rows_sampled != null && (
                               <span className="text-xs text-white/60">
-                                Rows: {datasetContext.bigdata_sample.rows_sampled.toLocaleString()}
+                                {t('chat.rowsLabel')}: {datasetContext.bigdata_sample.rows_sampled.toLocaleString()}
                               </span>
                             )}
                           </div>
                           {Array.isArray(datasetContext.bigdata_sample.selected_columns) && (
                             <p className="mt-2 truncate text-xs text-white/55">
-                              Columns: {datasetContext.bigdata_sample.selected_columns.join(', ')}
+                              {t('chat.columnsLabel')}: {datasetContext.bigdata_sample.selected_columns.join(', ')}
                             </p>
                           )}
                           {Array.isArray(datasetContext.bigdata_sample.applied_filters) &&
                             datasetContext.bigdata_sample.applied_filters.length > 0 && (
                               <p className="mt-1 truncate text-xs text-white/55">
-                                Filters: {datasetContext.bigdata_sample.applied_filters
+                                {t('chat.filtersLabel')}: {datasetContext.bigdata_sample.applied_filters
                                   .map((f) => `${f.column} ${f.operator} ${f.value}`)
                                   .join(', ')}
                               </p>
@@ -1315,10 +1618,10 @@ export function ChatSession() {
                         </div>
                       )}
                       <div className="grid gap-3 sm:grid-cols-2">
-                        <FieldList label="Numeric fields" values={capabilityGroups.numeric} />
-                        <FieldList label="Categories" values={capabilityGroups.categorical} />
-                        <FieldList label="Text fields" values={capabilityGroups.text} />
-                        <FieldList label="Date fields" values={capabilityGroups.date} />
+                        <FieldList label={t('chat.numericFields')} values={capabilityGroups.numeric} />
+                        <FieldList label={t('chat.categoryFields')} values={capabilityGroups.categorical} />
+                        <FieldList label={t('chat.textFields')} values={capabilityGroups.text} />
+                        <FieldList label={t('chat.dateFields')} values={capabilityGroups.date} />
                       </div>
                       {!datasetContextLoading &&
                         !capabilityGroups.numeric.length &&
@@ -1326,44 +1629,44 @@ export function ChatSession() {
                         !capabilityGroups.text.length &&
                         !capabilityGroups.date.length && (
                           <p className="text-sm text-white/55">
-                            I could not read field details yet, but you can still ask analytical questions.
+                            {t('chat.fieldDetailsUnavailable')}
                           </p>
                         )}
                     </div>
                   )}
                 </div>
 
-                {datasetSuggestions.length > 0 && (
+                {localizedDatasetSuggestions.length > 0 && (
                   <div className="rounded-2xl border border-white/10 bg-card/85 p-4">
                     <div className="mb-3 flex items-center gap-2">
                       <Sparkles className="h-4 w-4 text-violet-300" />
-                      <h3 className="text-sm font-semibold text-white">Useful questions for this dataset</h3>
+                      <h3 className="text-sm font-semibold text-white">{t('chat.usefulQuestions')}</h3>
                     </div>
                     <p className="mb-3 text-xs leading-relaxed text-white/50">
-                      Generated from the selected dataset columns
+                      {t('chat.generatedFromColumns')}
                       {datasetContext?.bigdata_sample
-                        ? ` sample (${(datasetContext.bigdata_sample.rows_sampled ?? datasetContext.row_count ?? 0).toLocaleString()} rows).`
+                        ? ` ${t('chat.sampleRows', { rows: (datasetContext.bigdata_sample.rows_sampled ?? datasetContext.row_count ?? 0).toLocaleString() })}.`
                         : datasetContext?.row_count != null
-                          ? ` (${datasetContext.row_count.toLocaleString()} rows).`
+                          ? ` (${t('chat.rows', { rows: datasetContext.row_count.toLocaleString() })}).`
                           : '.'}
                     </p>
                     <div className="space-y-3">
                       {introSuggestionGroups.map(([category, suggestions]) => (
                         <div key={category}>
                           <p className="mb-2 text-[11px] font-semibold uppercase tracking-normal text-white/40">
-                            {category}
+                            {suggestionCategoryText(category, t)}
                           </p>
                           <div className="flex flex-wrap gap-2">
                             {suggestions.map((suggestion) => (
                               <button
-                                key={`${suggestion.category}-${suggestion.query}`}
+                                key={`${suggestion.category}-${suggestion.intent ?? 'old'}-${suggestion.column ?? suggestion.query}`}
                                 type="button"
                                 onClick={() => runSuggestion(suggestion)}
                                 disabled={sending || datasetId == null}
-                                title={suggestion.explanation}
+                                title={suggestionDescription(suggestion, t, lang)}
                                 className="rounded-full border border-violet-300/20 bg-violet-500/10 px-3 py-1.5 text-left text-sm text-violet-50 transition hover:border-violet-300/40 hover:bg-violet-500/18 disabled:cursor-not-allowed disabled:opacity-55"
                               >
-                                {suggestion.title}
+                                {suggestionText(suggestion, lang)}
                               </button>
                             ))}
                           </div>
@@ -1393,11 +1696,11 @@ export function ChatSession() {
                       }}
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="mb-2 text-sm font-semibold text-white">Hi! How should I address you?</p>
+                        <p className="mb-2 text-sm font-semibold text-white">{t('chat.askName')}</p>
                         <Input
                           value={nameDraft}
                           onChange={(e) => setNameDraft(e.target.value)}
-                          placeholder="Your name"
+                          placeholder={t('chat.yourName')}
                           className="h-10 rounded-xl border-white/10 bg-white/[0.04]"
                         />
                       </div>
@@ -1406,18 +1709,18 @@ export function ChatSession() {
                         disabled={!nameDraft.trim()}
                         className="self-end rounded-xl bg-gradient-to-br from-purple-500 to-violet-600"
                       >
-                        Save
+                        {t('common.save')}
                       </Button>
                     </form>
                   )}
                   {datasetContext?.bigdata_sample && (
                     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-white/60">
-                      <Badge className="bg-violet-500/20 text-violet-100">Created from Big Data sample</Badge>
+                      <Badge className="bg-violet-500/20 text-violet-100">{t('chat.createdFromBigDataSample')}</Badge>
                       {datasetContext.bigdata_sample.source_dataset_name && (
-                        <span>Source: {datasetContext.bigdata_sample.source_dataset_name}</span>
+                        <span>{t('chat.sourceLabel')}: {datasetContext.bigdata_sample.source_dataset_name}</span>
                       )}
                       {datasetContext.bigdata_sample.rows_sampled != null && (
-                        <span>Rows: {datasetContext.bigdata_sample.rows_sampled.toLocaleString()}</span>
+                        <span>{t('chat.rowsLabel')}: {datasetContext.bigdata_sample.rows_sampled.toLocaleString()}</span>
                       )}
                     </div>
                   )}
@@ -1426,15 +1729,15 @@ export function ChatSession() {
               {datasetChangeNoticeId !== null && (
                 <div className="ml-11 rounded-2xl border border-violet-300/20 bg-violet-500/10 p-3 text-sm text-violet-50">
                   {datasetChangeNoticeId === 'none' || datasetId == null ? (
-                    <p>Dataset changed. No dataset is selected now.</p>
+                    <p>{t('chat.datasetChangedNone')}</p>
                   ) : datasetContext ? (
                     <p>
-                      Dataset changed. I am now connected to: <span className="font-semibold">{datasetContext.name}</span>
-                      {datasetContext.row_count != null ? ` · Records: ${datasetContext.row_count.toLocaleString()}` : ''}
-                      {datasetColumnCount(datasetContext) != null ? ` · Columns: ${datasetColumnCount(datasetContext)}` : ''}
+                      {t('chat.datasetChangedConnected')} <span className="font-semibold">{datasetContext.name}</span>
+                      {datasetContext.row_count != null ? ` · ${t('chat.records')}: ${datasetContext.row_count.toLocaleString()}` : ''}
+                      {datasetColumnCount(datasetContext) != null ? ` · ${t('chat.columnsLabel')}: ${datasetColumnCount(datasetContext)}` : ''}
                     </p>
                   ) : (
-                    <p>Dataset changed. Loading the selected dataset metadata...</p>
+                    <p>{t('chat.datasetChangedLoading')}</p>
                   )}
                 </div>
               )}
@@ -1442,52 +1745,52 @@ export function ChatSession() {
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
                     <Database className="h-4 w-4 shrink-0 text-violet-300" />
-                    <h3 className="truncate text-sm font-semibold text-white">Current dataset</h3>
+                    <h3 className="truncate text-sm font-semibold text-white">{t('chat.currentDataset')}</h3>
                   </div>
                   {datasetContextLoading && <Loader2 className="h-4 w-4 animate-spin text-white/50" />}
                 </div>
                 {datasetId == null ? (
                   <p className="text-sm text-white/60">
-                    No dataset is selected yet. Choose one from the selector above or upload a dataset to start analysis.
+                    {t('chat.noDatasetLong')}
                   </p>
                 ) : datasetContext ? (
                   <div className="space-y-3">
                     <div className="grid gap-2 text-xs text-white/70 sm:grid-cols-4">
                       <div className="rounded-xl border border-white/10 bg-white/[0.04] p-2 sm:col-span-2">
-                        <p className="text-white/40">Name</p>
+                        <p className="text-white/40">{t('chat.nameLabel')}</p>
                         <p className="mt-1 truncate font-medium text-white">{datasetContext.name}</p>
                       </div>
                       <div className="rounded-xl border border-white/10 bg-white/[0.04] p-2">
-                        <p className="text-white/40">Rows</p>
+                        <p className="text-white/40">{t('chat.rowsLabel')}</p>
                         <p className="mt-1 font-medium text-white">{formatDatasetCount(activeDatasetRows)}</p>
                       </div>
                       <div className="rounded-xl border border-white/10 bg-white/[0.04] p-2">
-                        <p className="text-white/40">Columns</p>
+                        <p className="text-white/40">{t('chat.columnsLabel')}</p>
                         <p className="mt-1 font-medium text-white">{formatDatasetCount(activeDatasetColumns)}</p>
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-white/60">
                       <Badge className="bg-violet-500/20 text-violet-100">{activeDatasetType}</Badge>
                       {datasetContext.bigdata_sample?.source_dataset_name && (
-                        <span>Source: {datasetContext.bigdata_sample.source_dataset_name}</span>
+                        <span>{t('chat.sourceLabel')}: {datasetContext.bigdata_sample.source_dataset_name}</span>
                       )}
                       {datasetContext.bigdata_sample?.row_limit != null && (
-                        <span>Row limit: {datasetContext.bigdata_sample.row_limit.toLocaleString()}</span>
+                        <span>{t('bigdata.rowLimit')}: {datasetContext.bigdata_sample.row_limit.toLocaleString()}</span>
                       )}
                     </div>
                     {Array.isArray(datasetContext.bigdata_sample?.selected_columns) && datasetContext.bigdata_sample.selected_columns.length > 0 && (
                       <p className="truncate text-xs text-white/50">
-                        Selected columns: {datasetContext.bigdata_sample.selected_columns.join(', ')}
+                        {t('chat.selectedColumns')}: {datasetContext.bigdata_sample.selected_columns.join(', ')}
                       </p>
                     )}
                     {Array.isArray(datasetContext.bigdata_sample?.applied_filters) && datasetContext.bigdata_sample.applied_filters.length > 0 && (
                       <p className="truncate text-xs text-white/50">
-                        Filters: {datasetContext.bigdata_sample.applied_filters.map((f) => `${f.column} ${f.operator} ${f.value}`).join(', ')}
+                        {t('chat.filtersLabel')}: {datasetContext.bigdata_sample.applied_filters.map((f) => `${f.column} ${f.operator} ${f.value}`).join(', ')}
                       </p>
                     )}
                   </div>
                 ) : (
-                  <p className="text-sm text-white/60">Loading selected dataset metadata before analysis...</p>
+                  <p className="text-sm text-white/60">{t('chat.loadingDatasetMeta')}</p>
                 )}
               </div>
               {messages.map((message) => (
@@ -1551,8 +1854,8 @@ export function ChatSession() {
                                 'h-11 w-11 shrink-0 rounded-full border border-white/18 bg-white/[0.12] text-white shadow-[0_8px_24px_rgba(0,0,0,0.16)] hover:bg-white/[0.22]',
                                 !message.audioUrl && 'opacity-50'
                               )}
-                              aria-label="Play voice message"
-                              title={message.audioUrl ? 'Play voice message' : 'Playback is available only for this sent recording'}
+                              aria-label={t('chat.playVoiceMessage')}
+                              title={message.audioUrl ? t('chat.playVoiceMessage') : t('chat.playbackOnlySentRecording')}
                             >
                               <Play className="ml-0.5 h-4.5 w-4.5" />
                             </Button>
@@ -1587,7 +1890,7 @@ export function ChatSession() {
                             >
                               Aa
                             </button>
-                            <span className="text-xs text-white/45">transcript</span>
+                            <span className="text-xs text-white/45">{t('chat.voiceTranscript')}</span>
                           </div>
                           <span className="text-xs tabular-nums text-white/58">
                             {message.timestamp.toLocaleTimeString([], {
@@ -1661,13 +1964,13 @@ export function ChatSession() {
                     )}
                     {message.type === 'assistant' && typeof message.responseTimeMs === 'number' && Number.isFinite(message.responseTimeMs) && (
                       <p className="mt-1 text-xs text-white/40">
-                        {formatResponseTime(message.responseTimeMs)}
+                        {formatResponseTime(message.responseTimeMs, t)}
                       </p>
                     )}
                   </div>
                 </motion.div>
               ))}
-              {datasetSuggestions.length > 0 && messages.length > 0 && (
+              {localizedDatasetSuggestions.length > 0 && messages.length > 0 && (
                 <motion.div
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -1677,18 +1980,18 @@ export function ChatSession() {
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <p className="text-sm font-semibold text-white">
-                        Useful questions for this dataset
+                        {t('chat.usefulQuestions')}
                       </p>
                       <p className="mt-1 text-xs leading-relaxed text-white/50">
-                        Generated from the selected dataset columns
+                        {t('chat.generatedFromColumns')}
                         {datasetContext?.bigdata_sample
-                          ? ` sample (${(datasetContext.bigdata_sample.rows_sampled ?? datasetContext.row_count ?? 0).toLocaleString()} rows).`
+                          ? ` ${t('chat.sampleRows', { rows: (datasetContext.bigdata_sample.rows_sampled ?? datasetContext.row_count ?? 0).toLocaleString() })}.`
                           : datasetContext?.row_count != null
-                            ? ` (${datasetContext.row_count.toLocaleString()} rows).`
+                            ? ` (${t('chat.rows', { rows: datasetContext.row_count.toLocaleString() })}).`
                             : '.'}
                       </p>
                     </div>
-                    {datasetSuggestions.length > 6 && (
+                    {localizedDatasetSuggestions.length > 6 && (
                       <Button
                         type="button"
                         size="sm"
@@ -1696,7 +1999,7 @@ export function ChatSession() {
                         onClick={() => setSuggestionsExpanded((value) => !value)}
                         className="h-8 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-white/70 hover:bg-white/[0.08] hover:text-white"
                       >
-                        {suggestionsExpanded ? 'Show less' : 'Show more'}
+                        {suggestionsExpanded ? t('chat.showLess') : t('chat.showMore')}
                       </Button>
                     )}
                   </div>
@@ -1704,19 +2007,19 @@ export function ChatSession() {
                     {nextSuggestionGroups.map(([category, suggestions]) => (
                       <div key={category}>
                         <p className="mb-2 text-[11px] font-semibold uppercase tracking-normal text-white/40">
-                          {category}
+                          {suggestionCategoryText(category, t)}
                         </p>
                         <div className="flex flex-wrap gap-2">
                           {suggestions.map((suggestion) => (
                             <button
-                              key={`${suggestion.category}-${suggestion.query}`}
+                              key={`${suggestion.category}-${suggestion.intent ?? 'old'}-${suggestion.column ?? suggestion.query}`}
                               type="button"
                               onClick={() => runSuggestion(suggestion)}
                               disabled={sending || datasetId == null}
-                              title={suggestion.explanation}
+                              title={suggestionDescription(suggestion, t, lang)}
                               className="rounded-full border border-violet-300/20 bg-violet-500/10 px-3 py-1.5 text-left text-sm text-violet-50 transition hover:border-violet-300/40 hover:bg-violet-500/18 disabled:cursor-not-allowed disabled:opacity-55"
                             >
-                              {suggestion.title}
+                              {suggestionText(suggestion, lang)}
                             </button>
                           ))}
                         </div>
@@ -1735,7 +2038,7 @@ export function ChatSession() {
                 >
                   <AssistantMascot size="sm" className="mt-1" />
                   <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm text-white/70">
-                    Assistant is typing...
+                    {t('chat.assistantTyping')}
                   </div>
                 </motion.div>
               )}
@@ -1754,7 +2057,7 @@ export function ChatSession() {
               className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#191824]/95 text-white/45 shadow-[0_8px_26px_rgba(0,0,0,0.35)] transition hover:bg-white/[0.07] hover:text-white/80 focus:outline-none focus:ring-2 focus:ring-violet-400/60"
               whileHover={{ y: composerMode === 'voice' ? -1 : 1, scale: 1.04 }}
               whileTap={{ scale: 0.94 }}
-              aria-label={composerMode === 'voice' ? 'Switch to text input' : 'Switch to voice input'}
+              aria-label={composerMode === 'voice' ? t('chat.switchToText') : t('chat.switchToVoice')}
             >
               {composerMode === 'voice' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </motion.button>
@@ -1791,8 +2094,8 @@ export function ChatSession() {
                       className="mb-0.5 h-11 w-11 shrink-0 rounded-2xl border border-white/10 bg-white/[0.04] text-white/70 hover:bg-violet-500/10 hover:text-white"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={sending}
-                      aria-label="Upload dataset"
-                      title="Upload CSV, XLSX, or JSON dataset"
+                      aria-label={t('chat.uploadDataset')}
+                      title={t('chat.uploadDatasetTitle')}
                     >
                       <Paperclip className="h-5 w-5" />
                     </Button>
@@ -1814,7 +2117,7 @@ export function ChatSession() {
                       size="icon"
                       disabled={sending || !textDraft.trim() || datasetId == null}
                       className="mb-0.5 h-11 w-11 shrink-0 rounded-2xl bg-gradient-to-br from-purple-500 to-violet-600 shadow-[0_0_24px_rgba(168,85,247,0.32)]"
-                      aria-label="Send query"
+                      aria-label={t('chat.sendQuery')}
                     >
                       {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
                     </Button>
@@ -1839,8 +2142,8 @@ export function ChatSession() {
                     className="absolute left-0 h-12 w-12 rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 hover:bg-violet-500/10 hover:text-white"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={sending}
-                    aria-label="Upload dataset"
-                    title="Upload CSV, XLSX, or JSON dataset"
+                    aria-label={t('chat.uploadDataset')}
+                    title={t('chat.uploadDatasetTitle')}
                   >
                     <Paperclip className="h-5 w-5" />
                   </Button>
@@ -1851,7 +2154,7 @@ export function ChatSession() {
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                     style={{ boxShadow: '0 0 40px rgba(168, 85, 247, 0.5)' }}
-                    aria-label="Start voice input"
+                    aria-label={t('chat.startVoice')}
                   >
                     <motion.div
                       animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.2, 0.5] }}
@@ -1942,8 +2245,8 @@ export function ChatSession() {
                   variant="ghost"
                   onClick={deleteRecording}
                   className="h-14 w-14 rounded-2xl border border-red-500/25 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-100"
-                  aria-label="Delete recording"
-                  title="Delete recording"
+                  aria-label={t('chat.deleteRecording')}
+                  title={t('chat.deleteRecording')}
                 >
                   <Trash2 className="h-5 w-5" />
                 </Button>

@@ -106,11 +106,11 @@ export function SavedVisuals() {
     if (!renameTarget) return;
     const nextTitle = renameTitle.trim();
     if (!nextTitle) {
-      toast.error('Title is required');
+      toast.error(t('common.requiredTitle'));
       return;
     }
     if (nextTitle.length > 255) {
-      toast.error('Title must be 255 characters or fewer');
+      toast.error(t('common.max255'));
       return;
     }
 
@@ -223,8 +223,8 @@ export function SavedVisuals() {
                             variant="ghost"
                             className="h-6 w-6 shrink-0 rounded-md text-white/45 hover:bg-violet-500/10 hover:text-violet-300"
                             onClick={() => openRename(query)}
-                            title="Rename"
-                            aria-label="Rename visualization"
+                            title={t('common.rename')}
+                            aria-label={t('visuals.rename')}
                           >
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
@@ -280,14 +280,14 @@ export function SavedVisuals() {
       <Dialog open={renameTarget != null} onOpenChange={(open) => !open && setRenameTarget(null)}>
         <DialogContent className="border-white/10 bg-[#141420] text-white sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Rename visualization</DialogTitle>
+            <DialogTitle>{t('visuals.rename')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
             <Input
               value={renameTitle}
               onChange={(e) => setRenameTitle(e.target.value.slice(0, 255))}
               className="bg-white/5 border-white/10 !text-white !caret-white placeholder:!text-white/45"
-              placeholder="Visualization title"
+              placeholder={t('visuals.titlePlaceholder')}
               maxLength={255}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {

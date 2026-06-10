@@ -31,6 +31,21 @@ _KK_HINT_WORDS = (
 )
 
 
+def _strip_latin_column_identifiers(text: str) -> str:
+    """
+    Ignore Latin/underscore column identifiers embedded in localized queries.
+
+    Examples:
+    - "Показать среднее значение по release_year" should still count as Russian.
+    - "release_year бойынша орташа мәнді көрсету" should still count as Kazakh.
+    """
+    q = text or ""
+    latin_ident = r"[A-Za-z][A-Za-z0-9_-]*"
+    q = re.sub(rf"\b(по|из|для|столбцу|колонке)\s+{latin_ident}\b", r"\1 ", q, flags=re.IGNORECASE)
+    q = re.sub(rf"\b{latin_ident}\s+(?=бойынша|бағанынан|бағаны|өрісі|жолы)\b", " ", q, flags=re.IGNORECASE)
+    return q
+
+
 def validate_query_language(text: str, preferred_language: str) -> tuple[bool, str]:
     """
     Validate user query language against the account language.
@@ -41,9 +56,10 @@ def validate_query_language(text: str, preferred_language: str) -> tuple[bool, s
     if not q:
         return (False, "empty")
 
-    has_cyr = bool(_RE_CYRILLIC.search(q))
-    has_lat = bool(_RE_LATIN.search(q))
-    low = q.lower()
+    q_for_detection = _strip_latin_column_identifiers(q)
+    has_cyr = bool(_RE_CYRILLIC.search(q_for_detection))
+    has_lat = bool(_RE_LATIN.search(q_for_detection))
+    low = q_for_detection.lower()
     lang = normalize_preferred_language(preferred_language)
 
     if lang == "en":

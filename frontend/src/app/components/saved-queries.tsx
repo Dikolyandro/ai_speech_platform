@@ -35,6 +35,18 @@ function savedSource(item: SavedQueryDto): { sessionId?: number; messageId?: str
   };
 }
 
+function savedDisplayQuery(item: SavedQueryDto): string {
+  const ans = savedAnswer(item);
+  const meta = ans?.saved_meta;
+  if (meta && typeof meta === 'object') {
+    const rec = meta as Record<string, unknown>;
+    if (typeof rec.display_query === 'string' && rec.display_query.trim()) {
+      return rec.display_query;
+    }
+  }
+  return item.title || item.query_text;
+}
+
 export function SavedQueries() {
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -63,17 +75,24 @@ export function SavedQueries() {
     const q = filter.trim().toLowerCase();
     if (!q) return queries;
     return queries.filter(
-      (x) =>
-        x.title.toLowerCase().includes(q) ||
-        x.query_text.toLowerCase().includes(q) ||
-        (x.sql_text && x.sql_text.toLowerCase().includes(q))
+      (x) => {
+        const display = savedDisplayQuery(x).toLowerCase();
+        return (
+          display.includes(q) ||
+          x.title.toLowerCase().includes(q) ||
+          x.query_text.toLowerCase().includes(q) ||
+          Boolean(x.sql_text && x.sql_text.toLowerCase().includes(q))
+        );
+      }
     );
   }, [queries, filter]);
 
   const runQuery = (item: SavedQueryDto) => {
+    const canonicalText = item.query_text;
+    const displayText = savedDisplayQuery(item);
     sessionStorage.setItem(
       'runSavedQuery',
-      JSON.stringify({ text: item.query_text, datasetId: item.dataset_id })
+      JSON.stringify({ text: canonicalText, canonicalText, displayText, datasetId: item.dataset_id })
     );
     navigate('/');
     toast.message(t('common.done'));
@@ -155,7 +174,7 @@ export function SavedQueries() {
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex-1 min-w-0">
                       <h3 className="font-semibold mb-1 group-hover:text-primary transition-colors truncate">
-                        {query.title}
+                        {savedDisplayQuery(query)}
                       </h3>
                       <Badge
                         variant="outline"
@@ -186,7 +205,7 @@ export function SavedQueries() {
                         variant="ghost"
                         className="h-8 w-8 hover:bg-violet-500/10 hover:text-violet-300"
                         onClick={() => openInChat(query)}
-                        title={src.sessionId ? 'Open in chat' : t('saved.runInChat')}
+                        title={src.sessionId ? t('saved.openChat') : t('saved.runInChat')}
                       >
                         <MessageSquare className="h-4 w-4" />
                       </Button>

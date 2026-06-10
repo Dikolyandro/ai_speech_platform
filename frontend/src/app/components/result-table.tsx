@@ -1,5 +1,6 @@
 import { Download } from 'lucide-react';
 import { Button } from './ui/button';
+import { useI18n } from '../i18n/context';
 import {
   Table,
   TableBody,
@@ -49,6 +50,7 @@ export function ResultTable({
   compact = false,
   showDownload = true,
 }: ResultTableProps) {
+  const { t } = useI18n();
   if (!rows.length) return null;
   const cols = columns?.length ? columns : Array.from(new Set(rows.flatMap((r) => Object.keys(r ?? {}))));
   if (!cols.length) return null;
@@ -89,8 +91,8 @@ export function ResultTable({
             variant="ghost"
             className={`${compact ? 'h-6 w-6 rounded-md' : 'h-8 w-8 rounded-lg'} border border-violet-400/35 bg-violet-500/10 text-violet-200 shadow-[0_0_18px_rgba(139,92,246,0.18)] hover:bg-violet-500/20 hover:text-white`}
             onClick={() => downloadRowsAsCsv(rows, cols, filename)}
-            title="Download CSV"
-            aria-label="Download CSV"
+            title={t('table.downloadCsv')}
+            aria-label={t('table.downloadCsv')}
           >
             <Download className={compact ? 'h-3 w-3' : 'h-4 w-4'} />
           </Button>

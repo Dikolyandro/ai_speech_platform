@@ -18,6 +18,7 @@ import { Button } from '../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { cn } from '../ui/utils';
 import type { QueryAnswerChart } from '../../../lib/api';
+import { useI18n } from '../../i18n/context';
 
 export type AnswerChartSuggestion = QueryAnswerChart;
 
@@ -218,17 +219,17 @@ function formatBin(value: number) {
   return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
 }
 
-function inferTitle(chart: QueryAnswerChart, type: VisualType, xKey: string, yKey: string) {
+function inferTitle(chart: QueryAnswerChart, type: VisualType, xKey: string, yKey: string, t: (key: string, vars?: Record<string, string | number>) => string) {
   const provided = chart.title?.trim();
   if (provided && !/^grouped results$/i.test(provided) && !/^chart$/i.test(provided)) return provided;
 
   const x = titleCase(xKey);
   const y = titleCase(yKey);
-  if (type === 'line') return `${y} by ${x}`;
-  if (type === 'histogram') return `Distribution of ${x}`;
-  if (type === 'donut') return `${x} Breakdown`;
-  if (/count|row|records?/i.test(yKey)) return `${x} by Record Count`;
-  return `${y} by ${x}`;
+  if (type === 'line') return t('chart.by', { y, x });
+  if (type === 'histogram') return t('chart.distributionOf', { column: x });
+  if (type === 'donut') return t('chart.breakdown', { column: x });
+  if (/count|row|records?/i.test(yKey)) return t('chart.byRecordCount', { column: x });
+  return t('chart.by', { y, x });
 }
 
 function inferChartType(chart: QueryAnswerChart, points: ChartPoint[], compact: boolean): VisualType {
@@ -252,6 +253,7 @@ function prepareChart(
   chart: QueryAnswerChart,
   rows: unknown[],
   compact: boolean,
+  t: (key: string, vars?: Record<string, string | number>) => string,
 ): PreparedChart | null {
   if (!chart.x || !chart.y || !Array.isArray(rows) || rows.length === 0) return null;
   const xKey = String(chart.x);
@@ -295,7 +297,7 @@ function prepareChart(
 
   return {
     type,
-    title: inferTitle(chart, type, xKey, yKey),
+    title: inferTitle(chart, type, xKey, yKey, t),
     data,
     xKey,
     yKey,
@@ -306,21 +308,25 @@ function prepareChart(
   };
 }
 
-function metadataText(prepared: PreparedChart) {
+function metadataText(prepared: PreparedChart, t: (key: string, vars?: Record<string, string | number>) => string) {
   const typeLabel =
     prepared.type === 'vertical-bar'
-      ? 'Bar Chart'
+      ? t('chart.bar')
       : prepared.type === 'horizontal-bar'
-        ? 'Horizontal Bar Chart'
+        ? t('chart.horizontalBar')
         : prepared.type === 'donut'
-          ? 'Donut Chart'
+          ? t('chart.donut')
           : prepared.type === 'histogram'
-            ? 'Histogram'
-            : 'Line Chart';
-  const metric = prepared.type === 'histogram' ? 'Frequency' : titleCase(prepared.yKey);
-  return `${typeLabel} • Grouped by ${titleCase(prepared.xKey)} • ${metric} • ${prepared.recordCount.toLocaleString()} records`;
+            ? t('chart.histogram')
+            : t('chart.line');
+  const metric = prepared.type === 'histogram' ? t('chart.frequency') : titleCase(prepared.yKey);
+  return t('chart.groupedByMeta', {
+    type: typeLabel,
+    x: titleCase(prepared.xKey),
+    metric,
+    count: prepared.recordCount.toLocaleString(),
+  });
 }
-
 function drawText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -366,7 +372,7 @@ function drawGrid(ctx: CanvasRenderingContext2D, left: number, top: number, widt
   }
 }
 
-function downloadChartAsPng(prepared: PreparedChart) {
+function downloadChartAsPng(prepared: PreparedChart, t: (key: string, vars?: Record<string, string | number>) => string) {
   const scale = 2;
   const width = 1600;
   const height = 900;
@@ -390,7 +396,7 @@ function downloadChartAsPng(prepared: PreparedChart) {
   ctx.stroke();
 
   drawText(ctx, prepared.title, 84, 102, width - 168, '700 34px Inter, Arial, sans-serif');
-  drawText(ctx, metadataText(prepared), 84, 142, width - 168, '500 17px Inter, Arial, sans-serif', '#6B7280');
+  drawText(ctx, metadataText(prepared, t), 84, 142, width - 168, '500 17px Inter, Arial, sans-serif', '#6B7280');
 
   const data = prepared.data;
   const max = Math.max(...data.map((d) => Math.max(0, d.y)), 1);
@@ -498,11 +504,12 @@ function downloadChartAsPng(prepared: PreparedChart) {
     }
   }
 
-  drawText(ctx, prepared.groupedRemainder ? `Top categories shown; ${prepared.groupedRemainder} grouped into Other.` : 'Source: AI analytics result', 84, 820, width - 168, '500 16px Inter, Arial, sans-serif', '#6B7280');
+  drawText(ctx, prepared.groupedRemainder ? t('chart.topCategories', { count: prepared.groupedRemainder }) : t('chart.sourceResult'), 84, 820, width - 168, '500 16px Inter, Arial, sans-serif', '#6B7280');
   downloadDataUrl(canvas.toDataURL('image/png'), filenameFromTitle(prepared.title));
 }
 
 function CustomTooltip({ active, payload, label }: any) {
+  const { t } = useI18n();
   if (!active || !payload?.length) return null;
   const row = payload[0]?.payload as ChartPoint | undefined;
   const value = payload[0]?.value;
@@ -512,7 +519,7 @@ function CustomTooltip({ active, payload, label }: any) {
         {row?.fullLabel ?? label}
       </div>
       <div style={tooltipItemStyle} className="mt-1 text-xs">
-        Value: {Number(value ?? 0).toLocaleString()}
+        {t('chart.value')}: {Number(value ?? 0).toLocaleString()}
       </div>
     </div>
   );
@@ -544,9 +551,10 @@ function PieLegend({ data, compact }: { data: ChartPoint[]; compact: boolean }) 
  * All preparation is frontend-only, so backend analytics behavior is preserved.
  */
 export function AutoChart({ chart, rows, compact = false }: AutoChartProps) {
+  const { t } = useI18n();
   try {
     if (!chart || chart.enabled === false || chart.chart_type === 'table') return null;
-    const prepared = prepareChart(chart, rows, compact);
+    const prepared = prepareChart(chart, rows, compact, t);
     if (!prepared || prepared.data.length === 0) return null;
     const heightClass = compact ? 'h-[190px]' : prepared.type === 'horizontal-bar' ? 'h-[360px]' : 'h-[300px]';
     const tick = compact ? compactAxisTick : axisTick;
@@ -566,7 +574,7 @@ export function AutoChart({ chart, rows, compact = false }: AutoChartProps) {
             </CardTitle>
             {!compact && prepared.groupedRemainder > 0 && (
               <p className="mt-1 text-[10px] text-white/45">
-                Showing top categories; {prepared.groupedRemainder} grouped into Other.
+                {t('chart.topCategories', { count: prepared.groupedRemainder })}
               </p>
             )}
           </div>
@@ -578,9 +586,9 @@ export function AutoChart({ chart, rows, compact = false }: AutoChartProps) {
               'shrink-0 rounded-md border border-violet-400/30 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20 hover:text-white',
               compact ? 'h-6 w-6' : 'h-7 w-7'
             )}
-            title="Download high-resolution PNG"
-            aria-label="Download high-resolution PNG"
-            onClick={() => downloadChartAsPng(prepared)}
+            title={t('chart.downloadPng')}
+            aria-label={t('chart.downloadPng')}
+            onClick={() => downloadChartAsPng(prepared, t)}
           >
             <Download className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
           </Button>
@@ -686,7 +694,7 @@ export function AutoChart({ chart, rows, compact = false }: AutoChartProps) {
           )}
         </CardContent>
         <div className="border-t border-white/10 px-3 py-2 text-[10px] leading-relaxed text-white/45">
-          {metadataText(prepared)}
+          {metadataText(prepared, t)}
         </div>
       </Card>
     );

@@ -60,7 +60,7 @@ interface AppSidebarProps {
 export function AppSidebar({ collapsed, onToggleCollapse }: AppSidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { state: auth, recentAccounts, logout, setPreferredLanguage } = useAuth();
+  const { state: auth, recentAccounts, logout } = useAuth();
   const { t, lang, setLang } = useI18n();
   const [openSessions, setOpenSessions] = useState(true);
   const [sessions, setSessions] = useState<ChatSessionDto[]>([]);
@@ -411,8 +411,7 @@ export function AppSidebar({ collapsed, onToggleCollapse }: AppSidebarProps) {
                 onClick={async () => {
                   const next = lang === 'ru' ? 'en' : lang === 'en' ? 'kk' : 'ru';
                   try {
-                    if (auth.status === 'authenticated') await setPreferredLanguage(next);
-                    setLang(next);
+                    await setLang(next);
                   } catch {
                     toast.error(t('common.error'));
                   }

@@ -122,11 +122,11 @@ export function UploadedDatasets() {
     if (!renameTarget) return;
     const nextName = renameName.trim();
     if (!nextName) {
-      toast.error('Name is required');
+      toast.error(t('common.requiredName'));
       return;
     }
     if (nextName.length > 255) {
-      toast.error('Name must be 255 characters or fewer');
+      toast.error(t('common.max255'));
       return;
     }
 
@@ -138,7 +138,7 @@ export function UploadedDatasets() {
       const updated = await renameDataset(id, nextName);
       setItems((current) => current.map((item) => (item.id === id ? { ...item, ...updated } : item)));
       setRenameTarget(null);
-      toast.success('Dataset renamed');
+      toast.success(t('datasets.renamed'));
       await refreshDatasets();
     } catch (e) {
       setItems(previous);
@@ -219,7 +219,7 @@ export function UploadedDatasets() {
                           size="icon"
                           variant="ghost"
                           className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-primary/10 hover:text-primary"
-                          title="Rename dataset"
+                          title={t('datasets.rename')}
                           onClick={() => openRename(dataset)}
                         >
                           <Pencil className="h-3.5 w-3.5" />
@@ -370,10 +370,10 @@ export function UploadedDatasets() {
             onOpenAutoFocus={(e) => e.preventDefault()}
           >
             <DialogHeader>
-              <DialogTitle>Rename dataset</DialogTitle>
+              <DialogTitle>{t('datasets.rename')}</DialogTitle>
             </DialogHeader>
             <div className="space-y-2">
-              <Label className="text-white/70">Dataset name</Label>
+              <Label className="text-white/70">{t('datasets.datasetName')}</Label>
               <Input
                 value={renameName}
                 maxLength={255}
@@ -390,7 +390,7 @@ export function UploadedDatasets() {
                 {t('common.close')}
               </Button>
               <Button type="button" onClick={() => void submitRename()} disabled={renaming}>
-                Save
+                {t('common.save')}
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -111,11 +111,30 @@ export type DatasetChatContext = {
 };
 
 export type DatasetSuggestion = {
-  title: string;
-  query: string;
-  required_columns: string[];
-  category: string;
-  explanation: string;
+  intent?:
+    | 'average'
+    | 'count'
+    | 'count_by'
+    | 'trend'
+    | 'trend_by'
+    | 'sample'
+    | 'top_values'
+    | 'min'
+    | 'max'
+    | 'sum'
+    | 'first_rows'
+    | string
+    | null;
+  column?: string | null;
+  type?: 'numeric' | 'categorical' | 'date' | 'text' | 'boolean' | string | null;
+  category?: 'numeric' | 'categorical' | 'date' | 'text' | 'boolean' | string | null;
+  required_columns?: string[];
+  title?: string | null;
+  query?: string | null;
+  label?: string | null;
+  explanation?: string | null;
+  displayText?: Partial<Record<PreferredLanguage, string>> | null;
+  canonicalQuery?: string | null;
 };
 
 export type SavedQueryDto = {
@@ -321,7 +340,7 @@ export async function transcribeAudio(file: Blob, filename = 'voice.webm') {
 export async function postQueryAnswer(body: {
   dataset_id: number;
   input: { type: string; text?: string; job_id?: number };
-  options?: { limit?: number; explain?: boolean; confidence_threshold?: number };
+  options?: { limit?: number; explain?: boolean; confidence_threshold?: number; execution_source?: 'suggestion' | 'manual' | string };
 }) {
   return apiJson<{
     dataset_id: number;
